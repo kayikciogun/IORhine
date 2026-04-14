@@ -1,0 +1,15 @@
+{
+  "name": "v0aigcode_cavalier_ffi",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "v0aigcode_cavalier_ffi_bg.wasm",
+    "v0aigcode_cavalier_ffi.js",
+    "v0aigcode_cavalier_ffi.d.ts"
+  ],
+  "main": "v0aigcode_cavalier_ffi.js",
+  "types": "v0aigcode_cavalier_ffi.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

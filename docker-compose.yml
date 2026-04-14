@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9002:3000"
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
+
