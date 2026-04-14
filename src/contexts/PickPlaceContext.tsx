@@ -22,6 +22,7 @@ interface PickPlaceContextType {
 const defaultPickPlaceConfig: PickPlaceConfig = {
   stripOriginX: 28.0,
   stripOriginY: 13.0,
+  rowLength: 10,
   cellSize: 20,
   safeZ: 10,
   rapidFeed: 1000,

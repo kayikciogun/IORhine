@@ -261,8 +261,8 @@ export function buildPlacementOrders(
       }
 
       // Strip üzerindeki pick koordinatı
-      const col = index % cfg.cellSize;
-      const row = Math.floor(index / cfg.cellSize);
+      const col = index % cfg.rowLength;
+      const row = Math.floor(index / cfg.rowLength);
       const pickX = cfg.stripOriginX + col * cfg.cellSize + cfg.cellSize / 2;
       const pickY = cfg.stripOriginY + row * cfg.cellSize + cfg.cellSize / 2;
 

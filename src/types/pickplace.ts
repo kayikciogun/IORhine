@@ -20,6 +20,7 @@ export interface StripConfig {
 export interface PickPlaceConfig {
   stripOriginX: number;
   stripOriginY: number;
+  rowLength: number;       // Satır başına max kutu (stripGenerator ile eşleşmeli)
   cellSize: number;
   safeZ: number;
   rapidFeed: number;
