@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { StoneType, StripConfig } from '@/types/pickplace';
+import { StoneType, PickPlaceConfig } from '@/types/pickplace';
 import { DxfWriter } from '@/Utils/dxfWriter';
 import { createCavalierOffsets, Path, ArcSegment, LineSegment, pathToCavalierPolyline, convertVertexesToPath } from '@/Utils/offsetUtils';
 
@@ -15,7 +15,7 @@ export interface StripCell {
 export function generateStripData(
   scene: THREE.Scene | THREE.Group,
   stoneTypes: StoneType[],
-  config: StripConfig
+  config: PickPlaceConfig
 ): StripCell[] {
   const cells: StripCell[] = [];
   let currentIndex = 0;
@@ -160,7 +160,7 @@ export function generateStripData(
   return cells;
 }
 
-export function exportStripToDxf(cells: StripCell[], config: StripConfig): string {
+export function exportStripToDxf(cells: StripCell[], config: PickPlaceConfig): string {
   const writer = new DxfWriter();
   
   // Outer frame for the whole strip (opsiyonel)

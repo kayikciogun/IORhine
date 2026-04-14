@@ -10,9 +10,9 @@ import { generateStripData, exportStripToDxf, StripCell } from '@/operations/str
 import { Path, ArcSegment } from '@/Utils/offsetUtils';
 
 export default function StripPreview() {
-  const { stoneTypes, stripConfig, updateStripConfig } = usePickPlace();
+  const { stoneTypes, pickPlaceConfig: cfg, updatePickPlaceConfig } = usePickPlace();
   const [cells, setCells] = useState<StripCell[]>([]);
-  const [appliedConfig, setAppliedConfig] = useState(stripConfig);
+  const [appliedConfig, setAppliedConfig] = useState(cfg);
 
   const pathToSvgString = (path: Path, offsetX: number, offsetY: number) => {
     if (!path || path.length === 0) return '';
@@ -49,14 +49,14 @@ export default function StripPreview() {
       return;
     }
     const scene = (window as any).dxfScene;
-    const generated = generateStripData(scene, stoneTypes, stripConfig);
+    const generated = generateStripData(scene, stoneTypes, cfg);
     setCells(generated);
-    setAppliedConfig({ ...stripConfig });
+    setAppliedConfig({ ...cfg });
   };
 
   const handleDownloadDxf = () => {
     if (cells.length === 0) return;
-    const dxfString = exportStripToDxf(cells, stripConfig);
+    const dxfString = exportStripToDxf(cells, cfg);
     
     const blob = new Blob([dxfString], { type: 'application/dxf' });
     const url = URL.createObjectURL(blob);
@@ -77,7 +77,7 @@ export default function StripPreview() {
       <div className="flex justify-between items-center mb-2">
         <h2 className="text-base font-semibold flex items-center gap-1.5">
           <LayoutGrid className="w-4 h-4 text-primary" />
-          Dizim Şablonu (Strip)
+          Dizim Şablonu
         </h2>
         <div className="flex gap-2">
           <Button 
@@ -104,32 +104,32 @@ export default function StripPreview() {
       <div className="flex gap-2 mb-2 bg-muted/20 p-2 rounded-lg border border-border flex-wrap justify-between">
         <div className="flex items-center gap-1.5">
           <Label className="text-[11px] whitespace-nowrap">Grid X:</Label>
-          <Input 
-            type="number" 
-            className="w-12 h-6 text-xs px-1" 
-            value={stripConfig.rowLength}
-            onChange={(e) => updateStripConfig({rowLength: parseInt(e.target.value) || 1 })}
+          <Input
+            type="number"
+            className="w-12 h-6 text-xs px-1"
+            value={cfg.rowLength}
+            onChange={(e) => updatePickPlaceConfig({ rowLength: parseInt(e.target.value) || 1 })}
             min={1}
           />
         </div>
         <div className="flex items-center gap-1.5">
           <Label className="text-[11px] whitespace-nowrap">Hücre:</Label>
-          <Input 
-            type="number" 
-            className="w-12 h-6 text-xs px-1" 
-            value={stripConfig.cellSize}
-            onChange={(e) => updateStripConfig({cellSize: parseFloat(e.target.value) || 10 })}
+          <Input
+            type="number"
+            className="w-12 h-6 text-xs px-1"
+            value={cfg.cellSize}
+            onChange={(e) => updatePickPlaceConfig({ cellSize: parseFloat(e.target.value) || 10 })}
             min={5}
           />
         </div>
         <div className="flex items-center gap-1.5">
           <Label className="text-[11px] whitespace-nowrap">Offset:</Label>
-          <Input 
-            type="number" 
+          <Input
+            type="number"
             step="0.1"
-            className="w-12 h-6 text-xs px-1" 
-            value={stripConfig.contourOffset}
-            onChange={(e) => updateStripConfig({contourOffset: parseFloat(e.target.value) || 0 })}
+            className="w-12 h-6 text-xs px-1"
+            value={cfg.contourOffset}
+            onChange={(e) => updatePickPlaceConfig({ contourOffset: parseFloat(e.target.value) || 0 })}
             min={0}
           />
         </div>

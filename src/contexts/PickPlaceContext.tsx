@@ -1,19 +1,17 @@
 'use client';
 
 import React, { createContext, useContext, useState, ReactNode } from 'react';
-import type { StoneType, PickPlaceConfig, StripConfig } from '../types/pickplace';
+import type { StoneType, PickPlaceConfig } from '../types/pickplace';
 
 interface PickPlaceContextType {
   stoneTypes: StoneType[];
   activeStoneTypeId: string | null;
   pickPlaceConfig: PickPlaceConfig;
-  stripConfig: StripConfig;
   addStoneType: (stoneType: StoneType) => void;
   updateStoneType: (id: string, updates: Partial<StoneType>) => void;
   removeStoneType: (id: string) => void;
   setActiveStoneTypeId: (id: string | null) => void;
   updatePickPlaceConfig: (updates: Partial<PickPlaceConfig>) => void;
-  updateStripConfig: (updates: Partial<StripConfig>) => void;
   assignContoursToType: (stoneTypeId: string, contourIds: string[]) => void;
   unassignContours: (contourIds: string[]) => void;
   reorderStoneTypes: (startIndex: number, endIndex: number) => void;
@@ -22,8 +20,10 @@ interface PickPlaceContextType {
 const defaultPickPlaceConfig: PickPlaceConfig = {
   stripOriginX: 28.0,
   stripOriginY: 13.0,
-  rowLength: 10,
   cellSize: 20,
+  rowLength: 10,
+  cellGap: 0,
+  contourOffset: 0.5,
   safeZ: 10,
   rapidFeed: 1000,
   pickFeed: 300,
@@ -49,52 +49,38 @@ const defaultPickPlaceConfig: PickPlaceConfig = {
   probeRetract: 5,
 };
 
-const defaultStripConfig: StripConfig = {
-  cellSize: 20,
-  cellGap: 0,
-  contourOffset: 0.5,
-  rowLength: 10,
-};
-
 const PickPlaceContext = createContext<PickPlaceContextType | undefined>(undefined);
 
 export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [stoneTypes, setStoneTypes] = useState<StoneType[]>([]);
   const [activeStoneTypeId, setActiveStoneTypeId] = useState<string | null>(null);
   const [pickPlaceConfig, setPickPlaceConfig] = useState<PickPlaceConfig>(defaultPickPlaceConfig);
-  const [stripConfig, setStripConfig] = useState<StripConfig>(defaultStripConfig);
 
   const addStoneType = (stoneType: StoneType) => setStoneTypes(prev => [...prev, stoneType]);
-  
+
   const updateStoneType = (id: string, updates: Partial<StoneType>) => {
     setStoneTypes(prev => prev.map(st => st.id === id ? { ...st, ...updates } : st));
   };
-  
+
   const removeStoneType = (id: string) => {
     setStoneTypes(prev => prev.filter(st => st.id !== id));
     if (activeStoneTypeId === id) setActiveStoneTypeId(null);
   };
-  
+
   const updatePickPlaceConfig = (updates: Partial<PickPlaceConfig>) => {
     setPickPlaceConfig(prev => ({ ...prev, ...updates }));
   };
-  
-  const updateStripConfig = (updates: Partial<StripConfig>) => {
-    setStripConfig(prev => ({ ...prev, ...updates }));
-  };
-  
+
   const assignContoursToType = (stoneTypeId: string, contourIds: string[]) => {
     setStoneTypes(prev => prev.map(st => {
       if (st.id === stoneTypeId) {
-        // Add new unique contours
         const newContours = [...new Set([...st.contourIds, ...contourIds])];
         return { ...st, contourIds: newContours };
       }
-      // Remove from other types if they had it
       return { ...st, contourIds: st.contourIds.filter(id => !contourIds.includes(id)) };
     }));
   };
-  
+
   const unassignContours = (contourIds: string[]) => {
     setStoneTypes(prev => prev.map(st => ({
       ...st,
@@ -116,13 +102,11 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
       stoneTypes,
       activeStoneTypeId,
       pickPlaceConfig,
-      stripConfig,
       addStoneType,
       updateStoneType,
       removeStoneType,
       setActiveStoneTypeId,
       updatePickPlaceConfig,
-      updateStripConfig,
       assignContoursToType,
       unassignContours,
       reorderStoneTypes

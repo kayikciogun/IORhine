@@ -117,6 +117,27 @@ export default function GcodePanel() {
     }
   };
 
+  // ── Placement G-code üret (sadece önizleme, probe/USB gerektirmez) ──────
+  const handlePreview = () => {
+    if (typeof window === 'undefined' || !(window as any).dxfScene) {
+      addLog('✗ DXF sahnesi henüz yüklenmedi!');
+      return;
+    }
+    const scene = (window as any).dxfScene;
+    const { orders, stoneTypeMap } = buildPlacementOrders(scene, stoneTypes, cfg);
+    const pp = new Mach3PostProcessor(cfg);
+    // Mock Z değerleri: stripZ=0, fabricZ=0
+    // Gerçek makinede probe bu değerleri #500 ve #501'e kaydeder
+    pp.enableSimulation(0, 0);
+    const result = pp.generate(orders, stoneTypeMap);
+    pp.disableSimulation();
+    setGcodeResult(result);
+
+    addLog(`── ${result.totalStones} taş → ${result.lines} satır G-Code üretildi (ÖNİZLEME) ──`);
+    addLog('Mock Z: Strip=0mm, Fabric=0mm — probe sonrası gerçek değerlerle geçerli.');
+    setShowPreview(true);
+  };
+
   // ── Placement G-code üret + gönder ──────────────────────────────────────
   const handleGenerateAndSend = async () => {
     if (typeof window === 'undefined' || !(window as any).dxfScene) {
@@ -213,11 +234,18 @@ export default function GcodePanel() {
       {/* Bağlantı + Akış Butonları */}
       <div className="flex flex-wrap gap-1.5 mb-2">
         {connState !== 'connected' ? (
-          <Button size="sm" variant="outline" className="h-7 px-3 text-xs"
-            onClick={handleConnect} disabled={connState === 'connecting'}>
-            <Usb className="w-3.5 h-3.5 mr-1" />
-            {connState === 'connecting' ? 'Bağlanıyor…' : 'Bağlan (USB)'}
-          </Button>
+          <>
+            <Button size="sm" variant="outline" className="h-7 px-3 text-xs"
+              onClick={handleConnect} disabled={connState === 'connecting'}>
+              <Usb className="w-3.5 h-3.5 mr-1" />
+              {connState === 'connecting' ? 'Bağlanıyor…' : 'Bağlan (USB)'}
+            </Button>
+            <Button size="sm" variant="secondary" className="h-7 px-3 text-xs"
+              onClick={handlePreview} disabled={totalAssigned === 0}>
+              <Cpu className="w-3.5 h-3.5 mr-1" />
+              Önizle
+            </Button>
+          </>
         ) : (
           <>
             <span className="flex items-center gap-1 text-xs text-green-500 font-medium px-1">

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { debug } from '../../Utils/debug';
+import { calcAngleFromSceneObject } from '../../Utils/contourAngle';
 
 // Mesafe görselleştirme fonksiyonları (Kullanıcı isteği üzerine kaldırıldı)
 export function clearDistanceVisualization() {
@@ -632,6 +633,14 @@ export function getGeometryInfo(object: THREE.Object3D): GeometryInfo | null {
       ];
   }
   
+  // Placement açısını hesapla (pick & place için)
+  const placementAngle = calcAngleFromSceneObject(object);
+  properties.push({
+    label: 'Placement Açı',
+    value: placementAngle.toFixed(2),
+    unit: '°'
+  });
+
   return {
     type: displayType || type || 'Bilinmeyen',
     handle,

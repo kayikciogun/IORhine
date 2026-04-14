@@ -8,20 +8,17 @@ export interface StoneType {
   contourIds: string[];   // DXF entity handle'ları
 }
 
-// Strip yapılandırması
-export interface StripConfig {
-  cellSize: number;        // 20mm
-  cellGap: number;         // 0mm
-  contourOffset: number;   // 0.1-1.0mm (geçme payı)
-  rowLength: number;       // Satır başına max kutu
-}
-
-// Pick & Place yapılandırması
+// Pick & Place yapılandırması (Strip + Makine ayarları birleşik)
 export interface PickPlaceConfig {
+  // Strip / Grid
   stripOriginX: number;
   stripOriginY: number;
-  rowLength: number;       // Satır başına max kutu (stripGenerator ile eşleşmeli)
-  cellSize: number;
+  cellSize: number;        // 20mm — hücre boyutu
+  rowLength: number;       // Satır başına max kutu
+  cellGap: number;         // 0mm — hücreler arası boşluk
+  contourOffset: number;   // 0.1-1.0mm — geçme payı (offset)
+
+  // Makine / İşlem
   safeZ: number;
   rapidFeed: number;
   pickFeed: number;

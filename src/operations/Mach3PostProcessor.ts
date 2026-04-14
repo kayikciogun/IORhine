@@ -102,10 +102,27 @@ export class Mach3PostProcessor {
   private emit(...strs: string[]) { this.lines.push(...strs); }
   private cmt(t: string) { this.lines.push(`; ${t}`); }
 
+  // Simulation mode: mock Z referans değerleri
+  private mockStripZ: number | null = null;
+  private mockFabricZ: number | null = null;
+
+  enableSimulation(stripZ: number, fabricZ: number) {
+    this.mockStripZ = stripZ;
+    this.mockFabricZ = fabricZ;
+  }
+  disableSimulation() {
+    this.mockStripZ = null;
+    this.mockFabricZ = null;
+  }
+
   // Z ifadesi: #500 (strip ref) + nozzle geometri farkı + taş tipi ofseti
   private pickZ(st: StoneType): string {
     const geom = this.cfg.probeNozzleOffsetZ;
     const offset = geom + st.pickZOffset;
+    if (this.mockStripZ !== null) {
+      const z = this.mockStripZ + offset;
+      return fmt(z);
+    }
     const sign = offset >= 0 ? '+' : '';
     return `[#500${sign}${fmt(offset)}]`;
   }
@@ -113,6 +130,10 @@ export class Mach3PostProcessor {
   private placeZ(st: StoneType): string {
     const geom = this.cfg.probeNozzleOffsetZ;
     const offset = geom + st.placeZOffset;
+    if (this.mockFabricZ !== null) {
+      const z = this.mockFabricZ + offset;
+      return fmt(z);
+    }
     const sign = offset >= 0 ? '+' : '';
     return `[#501${sign}${fmt(offset)}]`;
   }
@@ -120,14 +141,19 @@ export class Mach3PostProcessor {
   private header(orders: PlacementOrder[]) {
     const { cfg } = this;
     const totalStones = orders.length;
+    const isSim = this.mockStripZ !== null;
 
     this.emit(
       '; ============================================================',
       '; IO-CAM Pick & Place — PLACEMENT',
       `; Üretim: ${new Date().toISOString()}`,
       `; Toplam taş: ${totalStones}`,
-      '; ⚠  Bu dosyayı çalıştırmadan önce setup.nc çalıştırılmış olmalı!',
-      '; ⚠  #500 (strip Z) ve #501 (kumaş Z) hafızada olmalı.',
+      isSim
+        ? '; ⚠  SİMÜLASYON MODU — Gerçek makine için probe.nc çalıştırın!'
+        : '; ⚠  Bu dosyayı çalıştırmadan önce setup.nc çalıştırılmış olmalı!',
+      isSim
+        ? `; Mock Z: Strip=${this.mockStripZ}mm, Fabric=${this.mockFabricZ}mm`
+        : '; ⚠  #500 (strip Z) ve #501 (kumaş Z) hafızada olmalı.',
       '; ============================================================',
       '',
       '; ── Geometri özeti ──────────────────────────────────────────',
@@ -163,10 +189,8 @@ export class Mach3PostProcessor {
     if (cfg.vacuumOnDwell > 0) this.emit(`G4 P${cfg.vacuumOnDwell}`);
     this.emit(safeZ(cfg));
 
-    // 2. Döndür
-    if (Math.abs(order.placeAngle) > 0.01) {
-      this.emit(`G1 ${ax}${fmt(order.placeAngle, 2)} F${cfg.rotationFeed} ; Döndür`);
-    }
+    // 2. Döndür (açı ne olursa olsun gönder - makine sıfırı zaten sakin geçer)
+    this.emit(`G1 ${ax}${fmt(order.placeAngle, 2)} F${cfg.rotationFeed} ; Döndür ${fmt(order.placeAngle, 1)}°`);
 
     // 3. Place
     this.emit(
@@ -177,7 +201,7 @@ export class Mach3PostProcessor {
     if (cfg.vacuumOffDwell > 0) this.emit(`G4 P${cfg.vacuumOffDwell}`);
     this.emit(safeZ(cfg));
 
-    // 4. Sıfırla
+    // 4. Sıfırla (döndürüldüyse geri al)
     if (Math.abs(order.placeAngle) > 0.01) {
       this.emit(`G1 ${ax}0 F${cfg.rotationFeed} ; Sıfırla`);
     }
