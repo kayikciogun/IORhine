@@ -16,15 +16,15 @@ const PRESET_COLORS = [
 ];
 
 export default function StoneTypePanel() {
-  const { stoneTypes, activeStoneTypeId, setActiveStoneTypeId, addStoneType, removeStoneType, updateStoneType, assignContoursToType } = usePickPlace();
+  const { stoneTypes, activeStoneTypeId, setActiveStoneTypeId, addStoneType, removeStoneType, updateStoneType, assignContoursToType, pickPlaceConfig } = usePickPlace();
   const { selectedObjectsSet, clearSelection } = useSelection();
 
   // Yeni tip eklerken kullanılan state
   const [isAdding, setIsAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
-  const [newPickZ, setNewPickZ] = useState<number>(-3.5);
-  const [newPlaceZ, setNewPlaceZ] = useState<number>(-1.0);
+  const [newPickZ, setNewPickZ] = useState<number>(5);
+  const [newPlaceZ, setNewPlaceZ] = useState<number>(5);
 
   const handleAddNew = () => {
     if (!newName.trim()) return;
@@ -40,7 +40,8 @@ export default function StoneTypePanel() {
     
     setIsAdding(false);
     setNewName('');
-    // Opsiyonel: Rengi random değiştir
+    setNewPickZ(pickPlaceConfig.defaultStonePickZMm);
+    setNewPlaceZ(pickPlaceConfig.defaultStonePlaceZMm);
     setNewColor(PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)]);
   };
 
@@ -108,7 +109,13 @@ export default function StoneTypePanel() {
         <Button 
           variant="outline" 
           size="sm" 
-          onClick={() => setIsAdding(!isAdding)}
+          onClick={() => {
+            if (!isAdding) {
+              setNewPickZ(pickPlaceConfig.defaultStonePickZMm);
+              setNewPlaceZ(pickPlaceConfig.defaultStonePlaceZMm);
+            }
+            setIsAdding(!isAdding);
+          }}
           className="h-8"
         >
           <Plus className="w-4 h-4 mr-1" /> Yeni Tip
@@ -145,6 +152,10 @@ export default function StoneTypePanel() {
                 ))}
               </div>
             </div>
+
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Varsayılanlar G-Code ayarlarındaki «Taş tipi varsayılan Z» değerlerinden gelir (tablo +5 mm vb.); burada tek tip için değiştirebilirsiniz.
+            </p>
 
             <div className="flex gap-2">
               <div className="flex-1">

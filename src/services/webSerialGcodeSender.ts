@@ -40,6 +40,27 @@ export class WebSerialGCodeSender {
   private decoder: TextDecoder = new TextDecoder('utf-8', { fatal: false });
 
   /**
+   * Marlin/klonlar bazen \\r ile, bazen \\n veya \\r\\n ile satır biter.
+   * Yalnızca \\n aramak, buffer'da \\r kaldığında bir sonraki chunk ile
+   * "e" + "cho:..." veya "o" + "k" gibi sahte satırlar üretebilir.
+   */
+  private takeCompleteLineFromBuffer(): string | null {
+    while (this.readBuffer.length) {
+      const m = /^([\s\S]*?)(\r\n|\n|\r)/.exec(this.readBuffer);
+      if (!m) return null;
+      const raw = m[1];
+      this.readBuffer = this.readBuffer.slice(m[0].length);
+      const trimmedLine = raw.replace(/\r$/, '').trim();
+      if (trimmedLine.length) {
+        this.addLog('received', trimmedLine);
+        return trimmedLine;
+      }
+      // Boş satır — ayırıcıyı tükettik, sonraki tam satıra bak
+    }
+    return null;
+  }
+
+  /**
    * Check if Web Serial API is supported
    */
   static isSupported(): boolean {
@@ -263,17 +284,8 @@ export class WebSerialGCodeSender {
     const startTime = Date.now();
     let lastReadTime = Date.now();
 
-    // Check if we already have a complete line in buffer
-    const existingNewlineIndex = this.readBuffer.indexOf('\n');
-    if (existingNewlineIndex !== -1) {
-      const line = this.readBuffer.substring(0, existingNewlineIndex);
-      this.readBuffer = this.readBuffer.substring(existingNewlineIndex + 1);
-      const trimmedLine = line.replace(/\r\n?$/, '').trim(); // Remove \r and \n, then trim
-      if (trimmedLine.length > 0) {
-        this.addLog('received', trimmedLine);
-        return trimmedLine;
-      }
-    }
+    const existing = this.takeCompleteLineFromBuffer();
+    if (existing !== null) return existing;
 
     // Read until we get a complete line (Python readline() behavior)
     while (Date.now() - startTime < timeout) {
@@ -283,19 +295,10 @@ export class WebSerialGCodeSender {
         return null;
       }
 
-      // If no data received for a while, check if buffer has content
+      // If no data received for a while, tam satır var mı tekrar bak
       if (Date.now() - lastReadTime > 50 && this.readBuffer.length > 0) {
-        // Process buffer even if no newline yet
-        const newlineIndex = this.readBuffer.indexOf('\n');
-        if (newlineIndex !== -1) {
-          const line = this.readBuffer.substring(0, newlineIndex);
-          this.readBuffer = this.readBuffer.substring(newlineIndex + 1);
-          const trimmedLine = line.replace(/\r\n?$/, '').trim();
-          if (trimmedLine.length > 0) {
-            this.addLog('received', trimmedLine);
-            return trimmedLine;
-          }
-        }
+        const line = this.takeCompleteLineFromBuffer();
+        if (line !== null) return line;
       }
 
       try {
@@ -335,50 +338,23 @@ export class WebSerialGCodeSender {
             console.warn('[WebSerialGCodeSender] Decode error (ignored):', decodeError);
           }
           
-          // Check for newline in buffer (handle both \n and \r\n)
-          const newlineIndex = this.readBuffer.indexOf('\n');
-          if (newlineIndex !== -1) {
-            const line = this.readBuffer.substring(0, newlineIndex);
-            this.readBuffer = this.readBuffer.substring(newlineIndex + 1);
-            
-            // Remove \r if present (handle \r\n)
-            const trimmedLine = line.replace(/\r$/, '').trim();
-            
-            if (trimmedLine.length > 0) {
-              this.addLog('received', trimmedLine);
-              return trimmedLine;
-            }
-            // Empty line, continue reading
-          }
+          const line = this.takeCompleteLineFromBuffer();
+          if (line !== null) return line;
         }
       } catch (error: any) {
         if (error.name !== 'NetworkError' && !this.shouldStop) {
           console.error('[WebSerialGCodeSender] Read error:', error);
         }
-        // If buffer has content, try to return it
-        if (this.readBuffer.trim().length > 0) {
-          const line = this.readBuffer.trim();
-          this.readBuffer = '';
-          if (line.length > 0) {
-            this.addLog('received', line);
-            return line;
-          }
-        }
+        const line = this.takeCompleteLineFromBuffer();
+        if (line !== null) return line;
         return null;
       }
     }
 
-    // Timeout - check if we have partial data in buffer
-    if (this.readBuffer.trim().length > 0) {
-      const line = this.readBuffer.trim();
-      this.readBuffer = '';
-      if (line.length > 0) {
-        this.addLog('received', line);
-        return line;
-      }
-    }
-
-    return null; // Timeout with no data
+    // Zaman aşımı: satır sonu (LF) yoksa buffer'ı BOŞALTMA.
+    // Marlin/seri paket bölünmesinde "ok" → "o" + "k\n" gibi parçalar gelir; eski davranış
+    // buffer'ı silip ok'u bozuyordu ve sendGCode sonsuz beklemeye düşüyordu.
+    return null;
   }
 
   /**
@@ -526,7 +502,7 @@ export class WebSerialGCodeSender {
         const commandTimeout = 60000; // 60s timeout (for blocking commands like G28)
         
         // Use longer timeout for first response and be more patient at 115200 baud
-        const readTimeout = ackIndex === 0 ? 1000 : 200; // 1s for first, 200ms for rest
+        const readTimeout = ackIndex === 0 ? 1000 : 500; // 1s ilk satır; yavaş echo/busy için 500ms
 
         while (!okReceived && !errorReceived && !this.shouldStop) {
           // Check timeout
@@ -620,10 +596,12 @@ export class WebSerialGCodeSender {
           });
       }
 
-      // Log completion status
-      if (ackIndex === totalLines && sentIndex === totalLines) {
-        this.addLog('info', `✅ SUCCESS: All ${totalLines} lines sent and acknowledged`);
-      } else {
+      // Log completion status — eksik gönderimde reject et (aksi halde üst katman "başarılı" sanıyordu)
+      if (this.shouldStop) {
+        this.addLog('error', 'G-code gönderimi durduruldu');
+        throw new Error('G-code gönderimi durduruldu');
+      }
+      if (ackIndex !== totalLines || sentIndex !== totalLines) {
         if (sentIndex < totalLines) {
           const missing = totalLines - sentIndex;
           this.addLog('error', `⚠️ INCOMPLETE: ${missing} lines NOT SENT (${sentIndex}/${totalLines})`);
@@ -633,7 +611,12 @@ export class WebSerialGCodeSender {
           this.addLog('error', `⚠️ INCOMPLETE: ${missing} lines sent but NOT ACKNOWLEDGED (${ackIndex}/${sentIndex})`);
         }
         this.addLog('info', `📊 Final: Sent ${sentIndex}/${totalLines}, Acknowledged ${ackIndex}/${totalLines}`);
+        throw new Error(
+          `G-code tamamlanmadı (onaylanan ${ackIndex}/${totalLines}, gönderilen ${sentIndex}/${totalLines})`,
+        );
       }
+
+      this.addLog('info', `✅ SUCCESS: All ${totalLines} lines sent and acknowledged`);
 
       this.updateStatus({
         connected: true,
@@ -643,7 +626,7 @@ export class WebSerialGCodeSender {
         paused: false,
         current_line: ackIndex,
         total_lines: totalLines,
-        last_error: this.shouldStop ? 'Stopped by user' : null
+        last_error: null
       });
 
     } finally {

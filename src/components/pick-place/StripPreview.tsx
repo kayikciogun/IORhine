@@ -70,15 +70,38 @@ export default function StripPreview() {
     URL.revokeObjectURL(url);
   };
 
-  const maxRow = cells.length > 0 ? Math.max(...cells.map(c => Math.floor(c.y / appliedConfig.cellSize))) : 0;
-  const maxCol = cells.length > 0 ? Math.max(...cells.map(c => Math.floor(c.x / appliedConfig.cellSize))) : 0;
+  const stripBounds = useMemo(() => {
+    if (cells.length === 0) return null;
+    const hs = appliedConfig.cellSize / 2;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minSvgY = Infinity;
+    let maxSvgY = -Infinity;
+    for (const c of cells) {
+      const sx0 = c.x - hs;
+      const sx1 = c.x + hs;
+      const syTop = -c.y - hs;
+      const syBot = -c.y + hs;
+      if (sx0 < minX) minX = sx0;
+      if (sx1 > maxX) maxX = sx1;
+      if (syTop < minSvgY) minSvgY = syTop;
+      if (syBot > maxSvgY) maxSvgY = syBot;
+    }
+    const pad = 8;
+    return {
+      vbX: minX - pad,
+      vbY: minSvgY - pad,
+      vbW: maxX - minX + pad * 2,
+      vbH: maxSvgY - minSvgY + pad * 2,
+    };
+  }, [cells, appliedConfig.cellSize]);
 
   return (
     <div className="flex flex-col h-full bg-background/50">
       <div className="flex justify-between items-center mb-2">
         <h2 className="text-base font-semibold flex items-center gap-1.5">
           <LayoutGrid className="w-4 h-4 text-primary" />
-          Dizim Şablonu
+          Şablon
         </h2>
         <div className="flex gap-2">
           <Button 
@@ -148,42 +171,44 @@ export default function StripPreview() {
               Önizleme üretmek için yukarıdaki butona tıklayın. Toplam {totalStones} taş dizilecek.
             </div>
           ) : (
-            <svg 
-              width={(maxCol + 1) * appliedConfig.cellSize * 5} 
-              height={(maxRow + 1) * appliedConfig.cellSize * 5} 
-              viewBox={`-5 -5 ${(maxCol + 1) * appliedConfig.cellSize + 10} ${(maxRow + 1) * appliedConfig.cellSize + 10}`}
-              className="mt-2 bg-background border shadow-sm"
+            <svg
+              width={stripBounds ? Math.min(560, Math.max(180, stripBounds.vbW * 4)) : 200}
+              height={stripBounds ? Math.min(480, Math.max(160, stripBounds.vbH * 4)) : 200}
+              viewBox={
+                stripBounds
+                  ? `${stripBounds.vbX} ${stripBounds.vbY} ${stripBounds.vbW} ${stripBounds.vbH}`
+                  : '0 0 100 100'
+              }
+              preserveAspectRatio="xMidYMid meet"
+              className="mt-2 max-h-[min(52vh,420px)] w-full bg-background border shadow-sm"
             >
               {cells.map((cell, i) => {
                 const hs = appliedConfig.cellSize / 2;
+                // Dünya +Y = şeritte yukarı; SVG +y aşağı olduğu için Y ters (path ile aynı mantık)
+                const svgYTop = -cell.y - hs;
                 return (
                   <g key={i}>
-                    {/* Dış Kutu */}
-                    <rect 
-                      x={cell.x - hs} 
-                      y={cell.y - hs} 
-                      width={appliedConfig.cellSize} 
-                      height={appliedConfig.cellSize} 
-                      fill="none" 
-                      stroke="currentColor" 
+                    <rect
+                      x={cell.x - hs}
+                      y={svgYTop}
+                      width={appliedConfig.cellSize}
+                      height={appliedConfig.cellSize}
+                      fill="none"
+                      stroke="currentColor"
                       strokeOpacity="0.2"
-                      strokeWidth="0.5" 
+                      strokeWidth="0.5"
                     />
-                    
-                    {/* Taş Kontürü */}
-                    <path 
-                      d={pathToSvgString(cell.path, cell.x, cell.y)}
+                    <path
+                      d={pathToSvgString(cell.path, cell.x, -cell.y)}
                       fill="none"
                       stroke={cell.color}
                       strokeWidth="1"
                     />
-                    
-                    {/* Numara */}
-                    <text 
-                      x={cell.x - hs + 1} 
-                      y={cell.y - hs + 3.5} 
-                      fontSize="2.5" 
-                      fill="currentColor" 
+                    <text
+                      x={cell.x - hs + 1}
+                      y={svgYTop + 3.5}
+                      fontSize="2.5"
+                      fill="currentColor"
                       opacity="0.5"
                     >
                       {i + 1}

@@ -11,116 +11,15 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Alert, AlertDescription } from '../ui/alert';
 // Card components removed - using overlay design instead
-import { Upload, X, Send, Loader2, MessageSquarePlus, Box, File, RotateCcw, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Network } from 'lucide-react';
-import { Textarea } from '../ui/textarea';
+import { Upload, X, Box, File, RotateCcw, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Network } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useSelection } from './useSelection';
 import { useViewerInteractions } from './useViewerInteractions';
 import GeometryInfoCard from './GeometryInfoCard';
 import { getGeometryInfo, getSelectionSummary, GeometryInfo } from './geometryProperties';
 import { debug } from '@/Utils/debug';
+import { saveDxfBlob, clearDxfBlob } from '@/lib/appSessionStore';
 const DEBUG_VIEWER = typeof window !== 'undefined' && (localStorage.getItem('DEBUG_DXF') === '1' || localStorage.getItem('DEBUG_DXF_VIEWER') === '1');
-
-// Chat Input Overlay Component
-interface ChatInputOverlayProps {
-  isLoading?: boolean;
-  isAuth?: boolean;
-  onSendMessage?: (content: string) => void;
-  onNewChat?: () => void;
-}
-
-const ChatInputOverlay: React.FC<ChatInputOverlayProps> = ({
-  isLoading = false,
-  isAuth = true,
-  onSendMessage,
-  onNewChat
-}) => {
-  const [input, setInput] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (input.trim() && !isLoading && isAuth && onSendMessage) {
-      onSendMessage(input.trim());
-      setInput('');
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e);
-    }
-  };
-
-  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-
-    // Auto-resize textarea
-    const textarea = e.target;
-    textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-  };
-
-  const handleNewChat = () => {
-    if (onNewChat) {
-      onNewChat();
-      setInput('');
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="relative w-full">
-      <div className="bg-white/5 backdrop-blur-sm rounded-lg xs:rounded-xl sm:rounded-2xl border border-white/10 p-1 focus-within:border-white/20 transition-all duration-300 w-full">
-        <div className="flex items-end gap-2 p-2 xs:p-2 sm:p-2 w-full">
-          <Textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleTextareaChange}
-            onKeyDown={handleKeyDown}
-            placeholder={isAuth ? "Describe your CNC operation..." : "You must be logged in to start a new chat."}
-            disabled={isLoading || !isAuth}
-            className="flex-1 min-h-[40px] xs:min-h-[65px] sm:min-h-[60px] max-h-[80px] xs:max-h-[100px] sm:max-h-[120px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm placeholder:text-muted-foreground/50 w-full"
-            style={{
-              height: 'auto',
-              fontSize: '16px',
-              WebkitAppearance: 'none',
-              WebkitBorderRadius: '0',
-              touchAction: 'manipulation'
-            }}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck="false"
-          />
-          <Button
-            type="submit"
-            size="icon"
-            disabled={!input.trim() || isLoading || !isAuth}
-            className={cn(
-              "h-8 w-8 xs:h-10 xs:w-10 sm:h-12 sm:w-12 rounded-md xs:rounded-lg sm:rounded-xl transition-all duration-300 flex-shrink-0",
-              input.trim() && !isLoading && isAuth
-                ? "gradient-primary hover-lift hover-glow text-primary-foreground shadow-lg"
-                : "glass border-white/20"
-            )}
-          >
-            {isLoading ? (
-              <Loader2 className="h-3 w-3 xs:h-4 xs:w-4 sm:h-5 sm:w-5 animate-spin" />
-            ) : (
-              <Send className="h-3 w-3 xs:h-4 xs:w-4 sm:h-5 sm:w-5" />
-            )}
-          </Button>
-        </div>
-      </div>
-    </form>
-  );
-};
 
 interface DxfViewerProps {
   className?: string;
@@ -129,10 +28,6 @@ interface DxfViewerProps {
   onFileLoad?: (stats: DxfStats) => void;
   onError?: (error: string) => void;
   initialFile?: File | null;
-  isLoading?: boolean;
-  isAuth?: boolean;
-  onSendMessage?: (content: string) => void;
-  onNewChat?: () => void;
   isPickPlaceMode?: boolean;
   activeStoneTypeId?: string | null;
 }
@@ -151,7 +46,7 @@ interface ViewerState {
 
 // Camera controls interface removed - not needed anymore
 
-const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = false, onClose, onFileLoad, onError, initialFile, isLoading = false, isAuth = true, onSendMessage, onNewChat, isPickPlaceMode = false, activeStoneTypeId = null }) => {
+const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = false, onClose, onFileLoad, onError, initialFile, isPickPlaceMode = false, activeStoneTypeId = null }) => {
   const { selectedDxfFile, setSelectedDxfFile, setParsedDxf, setMainGroup, mainGroup, modelTransform, setModelTransform, setDxfScene } = useDxf();
   const { stoneTypes } = usePickPlace();
   const mountRef = useRef<HTMLDivElement>(null);
@@ -262,7 +157,6 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
 
   const {
     selectedObjectsSet,
-    excludedObjectsSet,
     selectionInfo,
     clearSelection,
     clearExclusions
@@ -1292,6 +1186,8 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
         error: null
       }));
 
+      void clearDxfBlob();
+
       // context'teki selectedDxfFile'ı günceleyerek header bar ile senkronize et
       if (selectedDxfFile !== file) {
         setSelectedDxfFile?.(file);
@@ -1488,6 +1384,8 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
 
       onFileLoad?.(stats);
 
+      void saveDxfBlob({ content: dxfContent, fileName: file.name, savedAt: Date.now() });
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       setViewerState(prev => ({
@@ -1502,7 +1400,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
       onError?.(errorMessage);
       console.error('[DXF Viewer] loadFile error', error);
     }
-  }, [onFileLoad, onError, clearSelection, clearExclusions, setParsedDxf, setMainGroup]);
+  }, [onFileLoad, onError, clearSelection, clearExclusions, setParsedDxf, setMainGroup, setSelectedDxfFile]);
 
   // Handle file input change
   const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1694,7 +1592,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
         </div>
       )}
 
-      {/* Overlay Controls - Top Left */}
+      {/* Overlay: yükleme sol üst */}
       {!hideControls && (
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-3">
           {/* File Upload - Modern Drag & Drop - Show only when nothing is loaded */}
@@ -1728,59 +1626,45 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
             </div>
           )}
 
-          {/* Selection Info */}
-          {(viewerState.stats || viewerState.loaded3DObject) && (
-            <div className="glass backdrop-blur-md rounded-lg p-3 border border-white/20">
-              <div className="text-sm text-muted-foreground space-y-1">
-                <div className="flex items-center gap-2 mb-2">
-                  {viewerState.objectType === '3d' ? (
-                    <File className="w-4 h-4 text-green-400" />
-                  ) : (
-                    <Box className="w-4 h-4 text-blue-400" />
-                  )}
-                  <span className="text-foreground font-medium">
-                    {viewerState.objectType === '3d' ? '3D Object' : 'DXF Drawing'}
-                  </span>
-                </div>
-                <div>Selected: <span className="text-foreground">{selectedObjectsSet.size}</span></div>
-                <div>Excluded: <span className="text-foreground">{excludedObjectsSet.size}</span></div>
-                {selectedObjectsSet.size > 0 && (
-                  <Button
-                    onClick={clearSelection}
-                    size="sm"
-                    variant="ghost"
-                    className="mt-2 h-6 px-2 text-xs glass hover-lift hover-glow transition-all duration-300 border border-white/20"
-                  >
-                    Clear Selection
-                  </Button>
-                )}
-                {excludedObjectsSet.size > 0 && (
-                  <Button
-                    onClick={clearExclusions}
-                    size="sm"
-                    variant="ghost"
-                    className="mt-1 h-6 px-2 text-xs glass hover-lift hover-glow transition-all duration-300 border border-white/20"
-                  >
-                    Clear Exclusions
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-
         </div>
       )}
 
-
-      {/* Chat Input - Bottom Center Overlay */}
-      {(viewerState.stats || viewerState.loaded3DObject) && (
-        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20 w-full max-w-2xl px-4">
-          <ChatInputOverlay
-            isLoading={isLoading}
-            isAuth={isAuth}
-            onSendMessage={onSendMessage}
-            onNewChat={onNewChat}
-          />
+      {/* Seçim özeti — sağ alt */}
+      {!hideControls && (viewerState.stats || viewerState.loaded3DObject) && (
+        <div className="absolute bottom-4 right-4 z-10 max-w-[min(280px,calc(100%-1.5rem))] pointer-events-none">
+          <div
+            className="pointer-events-auto rounded-2xl border border-white/15 bg-zinc-950/75 px-3.5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl ring-1 ring-white/[0.06]"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2.5 mb-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                {viewerState.objectType === '3d' ? (
+                  <File className="h-4 w-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <Box className="h-4 w-4 shrink-0 text-sky-400" />
+                )}
+                <span className="truncate text-xs font-semibold uppercase tracking-wide text-white/90">
+                  {viewerState.objectType === '3d' ? '3D' : 'DXF'}
+                </span>
+              </div>
+              <span className="text-[10px] font-medium text-white/45">Seçim</span>
+            </div>
+            <div className="rounded-xl bg-white/[0.06] px-2 py-2 text-center ring-1 ring-white/[0.04]">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-white/50">Seçili</div>
+              <div className="font-mono text-lg font-semibold tabular-nums text-white">{selectedObjectsSet.size}</div>
+            </div>
+            {selectedObjectsSet.size > 0 && (
+              <div className="mt-2.5">
+                <Button
+                  onClick={clearSelection}
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.04] text-xs font-medium text-white/90 hover:bg-white/[0.09] hover:text-white"
+                >
+                  Seçimi temizle
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

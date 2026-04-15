@@ -19,7 +19,7 @@ interface ViewerInteractionsConfig {
 }
 
 export function useViewerInteractions(config: ViewerInteractionsConfig) {
-    const { selectedObjectsSet, excludedObjectsSet, updateSelection, clearSelection, excludeObject: excludeObj, excludeObjects, unexcludeObject, clearExclusions } = useSelection();
+    const { selectedObjectsSet, excludedObjectsSet, updateSelection, clearSelection, clearExclusions } = useSelection();
 
     // Central debug flag for interactions
     const DEBUG_DXF_I = typeof window !== 'undefined' && (localStorage.getItem('DEBUG_DXF') === '1' || localStorage.getItem('DEBUG_DXF_INTERACTIONS') === '1');
@@ -40,8 +40,6 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
     // Double Click State
     const lastClickTime = useRef(0);
     const lastClickedObject = useRef<THREE.Object3D | null>(null);
-    const lastRightClickTime = useRef(0);
-    const lastRightClickedObject = useRef<THREE.Object3D | null>(null);
     const doubleClickDelay = 300;
 
     // Materials
@@ -530,8 +528,23 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
                 return;
             }
 
-            const originalMat = originalMaterials.current.get(object) as LineMaterial | undefined;
-            
+            // İlk yüklemede (hover/seçim olmadan) originalMaterials boş kalıyordu;
+            // Pick&Place __forceRestoreMaterial bu yüzden rengi uygulayamıyordu.
+            let originalMat = originalMaterials.current.get(object) as LineMaterial | undefined;
+            if (!originalMat && object.material instanceof LineMaterial) {
+                const currentMat = object.material as LineMaterial;
+                if (currentMat !== materials.excludedMaterial &&
+                    currentMat !== materials.selectionMaterial &&
+                    currentMat !== materials.hoverMaterial) {
+                    const renderer = config.renderer;
+                    if (renderer) {
+                        currentMat.resolution.set(renderer.domElement.width, renderer.domElement.height);
+                    }
+                    originalMaterials.current.set(object, currentMat);
+                    originalMat = currentMat;
+                }
+            }
+
             const pickColor = object.userData.pickPlaceColor;
             const pickOpacity = object.userData.pickPlaceOpacity;
             const pickLinewidth = object.userData.pickPlaceLinewidth;
@@ -1434,91 +1447,6 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
         updateSelection(finalSelection);
     }, [config.mainGroup, selectedObjectsSet, updateSelection, selectAllOfType]);
 
-    // Exclude all connected objects (mixed types allowed)
-    const excludeConnected = useCallback((targetObject: THREE.Object3D) => {
-        debug.log(`[Exclude Connected] Starting chain exclusion for ${targetObject.userData?.type}`);
-        const mainGroup = config.mainGroup;
-        if (!mainGroup) {
-            debug.log(`[Exclude Connected] No mainGroup found`);
-            return;
-        }
-
-        const geometryTypes = new Set(['LINE', 'ARC', 'SPLINE', 'CIRCLE', 'POLYLINE', 'LWPOLYLINE']);
-        const candidates: THREE.Object3D[] = [];
-        mainGroup.children.forEach(obj => {
-            const t = (obj.userData as any)?.type;
-            const isCenter = (obj.userData as any)?.isCenterPointGroup || (obj.userData as any)?.isPointGroup;
-            if (!isCenter && geometryTypes.has(t)) {
-                candidates.push(obj);
-            }
-        });
-
-        debug.log(`[Exclude Connected] Found ${candidates.length} candidate objects`);
-
-        const connectedSet = findConnectedObjects(targetObject, candidates, undefined, undefined, 0.01);
-        debug.log(`[Exclude Connected] Connected objects found: ${connectedSet.size}`);
-
-        if (connectedSet.size === 0) {
-            // Fallback to excluding only the target
-            debug.log(`[Exclude Connected] No connected objects found, excluding only target`);
-            excludeObj(targetObject);
-            return;
-        }
-
-        // ✅ Tüm bağlı objeleri tek seferde exclude et (batch update)
-        excludeObjects(connectedSet);
-        debug.log(`[Exclude Connected] Batch exclusion completed for ${connectedSet.size} objects`);
-    }, [config.mainGroup, findConnectedObjects, excludeObj, excludeObjects]);
-
-    // Select connected objects of same type (mixed types allowed for geometry)
-    const selectConnectedSameType = useCallback((targetObject: THREE.Object3D) => {
-        const mainGroup = config.mainGroup;
-        if (!mainGroup) return;
-
-        // Hedef objenin türünü belirle
-        const targetType = targetObject.userData?.type;
-        const targetSubType = targetObject.userData?.subType;
-
-        if (!targetType) {
-            debug.warn('[Double Right Click] Target object has no type, falling back to single select');
-            const newSelection = new Set([targetObject]);
-            updateSelection(newSelection);
-            return;
-        }
-
-        debug.log(`[Double Right Click] Selecting connected objects starting from: ${targetType}${targetSubType ? ` (${targetSubType})` : ''}`);
-
-        // TÜM objeleri dahil et (sadece aynı türdeki değil) - Arc, Line, Spline birbirine bağlanabilir
-        // CENTER_POINT'ler bağlı olamaz, onları çıkar
-        const allCandidateObjects: THREE.Object3D[] = [];
-        const geometryTypes = ['LINE', 'ARC', 'SPLINE', 'CIRCLE', 'POLYLINE', 'LWPOLYLINE'];
-
-        mainGroup.children.forEach(obj => {
-            if (excludedObjectsSet.has(obj)) return; // Zaten exclude edilmiş objeleri atla
-
-            const objType = obj.userData?.type;
-
-            // Sadece geometrik objeler dahil et - CENTER_POINT'leri çıkar çünkü bağlı olamazlar
-            if (geometryTypes.includes(objType)) {
-                allCandidateObjects.push(obj);
-            }
-        });
-
-        debug.log(`[Double Right Click] Total candidate objects for selection: ${allCandidateObjects.length}`);
-
-        // Bağlı objeleri bul - TÜR KISITLAMASI YOK (farklı türler birbirine bağlanabilir)
-        const connectedObjects = findConnectedObjects(
-            targetObject,
-            allCandidateObjects
-            // targetType ve targetSubType parametrelerini kaldırdık
-        );
-
-        debug.log(`[Double Right Click] Found ${connectedObjects.size} connected objects to select (mixed types allowed)`);
-
-        // Seçimi güncelle
-        updateSelection(connectedObjects);
-    }, [config.mainGroup, findConnectedObjects, excludedObjectsSet, updateSelection]);
-
     // --- End chain selection helpers ---
 
     // Event handlers
@@ -1854,42 +1782,7 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
 
     const handleContextMenu = useCallback((event: MouseEvent) => {
         event.preventDefault();
-
-        // ✅ Kamera hareket ederken right-click yapma
-        if (config.isCameraMoving) {
-            return;
-        }
-
-        updateMouseCoordinates(event as any);
-        const intersects = getIntersectedObjects();
-
-        if (intersects.length > 0) {
-            let targetObject = intersects[0].object as THREE.Object3D;
-
-            // Check if the target object is part of a group (center point or point group)
-            if (targetObject.parent &&
-                (targetObject.parent.userData?.isCenterPointGroup ||
-                    targetObject.parent.userData?.isPointGroup)) {
-                targetObject = targetObject.parent;
-            }
-
-            // Double right-click detection
-            const now = performance.now();
-            const isSame = lastRightClickedObject.current === targetObject;
-            const isDouble = isSame && (now - lastRightClickTime.current) <= doubleClickDelay;
-            lastRightClickTime.current = now;
-            lastRightClickedObject.current = targetObject;
-
-            if (isDouble) {
-                // Double right-click: Exclude all connected objects (mixed types)
-                excludeConnected(targetObject);
-                return;
-            }
-
-            // Single right-click: exclude only target
-            excludeObj(targetObject);
-        }
-    }, [config.isCameraMoving, updateMouseCoordinates, getIntersectedObjects, excludeObj, excludeConnected, selectConnectedSameType, doubleClickDelay]);
+    }, []);
 
     const handleKeyDown = useCallback((event: KeyboardEvent) => {
         switch (event.key.toLowerCase()) {
@@ -2047,7 +1940,6 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
         materials,
         clearSelection,
         clearExclusions,
-        updateSelection,
-        selectConnectedSameType
+        updateSelection
     };
 }

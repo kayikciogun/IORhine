@@ -136,13 +136,13 @@ export function generateStripData(
         }
       }
 
-      // Grid içindeki pozisyonunu hesapla
+      // Grid — buildPlacementOrders ile aynı: satır arttıkça dünya +Y (DXF/şerit)
       const col = currentIndex % config.rowLength;
       const row = Math.floor(currentIndex / config.rowLength);
-      
-      // X ve Y (örneğin sol alt orijinden başlıyor)
-      const cellX = col * config.cellSize + (config.cellSize / 2);
-      const cellY = row * config.cellSize + (config.cellSize / 2);
+      const cellX =
+        config.stripOriginX + col * config.cellSize + config.cellSize / 2;
+      const cellY =
+        config.stripOriginY + row * config.cellSize + config.cellSize / 2;
 
       cells.push({
         x: cellX,

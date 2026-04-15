@@ -1,7 +1,8 @@
 'use client';
 
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import type { StoneType, PickPlaceConfig } from '../types/pickplace';
+import { loadPickPlaceSnapshot, savePickPlaceSnapshot } from '@/lib/appSessionStore';
 
 interface PickPlaceContextType {
   stoneTypes: StoneType[];
@@ -18,43 +19,71 @@ interface PickPlaceContextType {
 }
 
 const defaultPickPlaceConfig: PickPlaceConfig = {
-  stripOriginX: 28.0,
-  stripOriginY: 13.0,
-  cellSize: 20,
-  rowLength: 10,
+  // İlk hücre merkezi ≈ 50,50 (cellSize/2 = 10 → origin 40,40)
+  stripOriginX: -100.0,
+  stripOriginY: -100.0,
+  cellSize: 10,
+  rowLength: 2,
   cellGap: 0,
   contourOffset: 0.5,
+  defaultStonePickZMm: 5,
+  defaultStonePlaceZMm: 5,
   safeZ: 10,
-  rapidFeed: 1000,
-  pickFeed: 300,
-  placeFeed: 200,
+  rapidFeed: 10000,
+  jogFeed: 30000,
+  pickFeed: 3000,
+  placeFeed: 2000,
   rotationAxis: 'E',
-  rotationFeed: 500,
+  rotationFeed: 5000,
   stripAngle: 0,
   vacuumOnDwell: 1,
   vacuumOffDwell: 0.5,
   vacuumOnCode: 'M106 S255',
   vacuumOffCode: 'M107',
-  probeEnabled: true,
-  probeMode: 'startup',
-  probePeriod: 50,
-  probeOffsetX: -30.0,
-  probeOffsetY: 0.0,
-  probeNozzleOffsetZ: 0.0,
-  stripProbeX: 0,
-  stripProbeY: 0,
-  fabricProbeX: 50,
-  fabricProbeY: 50,
-  probeFeed: 100,
-  probeRetract: 5,
+  firmware: 'marlin', // Ender 3 (Marlin) için
+  marlinWorkspaceOriginX: 107.5,
+  marlinWorkspaceOriginY: 107.5,
+  marlinDxfAtG92X: 0,
+  marlinDxfAtG92Y: 0,
+  marlinStripZMm: 0,
+  marlinFabricZMm: 0,
 };
 
 const PickPlaceContext = createContext<PickPlaceContextType | undefined>(undefined);
 
 export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  /** SSR ve ilk client çizimi aynı olmalı; localStorage sadece mount sonrası okunur (hydration hatası önlenir). */
   const [stoneTypes, setStoneTypes] = useState<StoneType[]>([]);
   const [activeStoneTypeId, setActiveStoneTypeId] = useState<string | null>(null);
   const [pickPlaceConfig, setPickPlaceConfig] = useState<PickPlaceConfig>(defaultPickPlaceConfig);
+  const pickPlaceStorageReadyRef = useRef(false);
+
+  useEffect(() => {
+    const snap = loadPickPlaceSnapshot();
+    if (snap) {
+      setStoneTypes(Array.isArray(snap.stoneTypes) ? snap.stoneTypes : []);
+      setActiveStoneTypeId(snap.activeStoneTypeId ?? null);
+      // localStorage’taki JSON tam PickPlaceConfig olmayabilir; `in` ile daraltma never üretmesin diye Partial
+      const raw = snap.pickPlaceConfig as Partial<PickPlaceConfig>;
+      const merged: PickPlaceConfig = { ...defaultPickPlaceConfig, ...raw };
+      if (!('marlinDxfAtG92X' in raw) || typeof raw.marlinDxfAtG92X !== 'number') {
+        merged.marlinDxfAtG92X =
+          raw.marlinWorkspaceOriginX ?? defaultPickPlaceConfig.marlinWorkspaceOriginX;
+        merged.marlinDxfAtG92Y =
+          raw.marlinWorkspaceOriginY ?? defaultPickPlaceConfig.marlinWorkspaceOriginY;
+      }
+      setPickPlaceConfig(merged);
+    }
+    pickPlaceStorageReadyRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!pickPlaceStorageReadyRef.current) return;
+    const t = window.setTimeout(() => {
+      savePickPlaceSnapshot({ stoneTypes, pickPlaceConfig, activeStoneTypeId });
+    }, 450);
+    return () => window.clearTimeout(t);
+  }, [stoneTypes, pickPlaceConfig, activeStoneTypeId]);
 
   const addStoneType = (stoneType: StoneType) => setStoneTypes(prev => [...prev, stoneType]);
 

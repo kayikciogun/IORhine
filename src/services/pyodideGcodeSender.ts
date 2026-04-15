@@ -18,6 +18,10 @@ let loadPromise: Promise<any> | null = null;
 const PYTHON_CODE = `
 import json
 import time
+import re
+
+# "ok" alt dizgi değil: "book", "broken" vb. yanlış pozitif olmasın; Marlin onayı genelde sözcük "ok"
+_OK_ACK = re.compile(r'(?:^|\\s)ok(?:\\s|$)', re.IGNORECASE)
 
 class GCodeSender:
     def __init__(self):
@@ -37,8 +41,7 @@ class GCodeSender:
         
         response_lower = response.lower()
         
-        # Break if "ok" received
-        if "ok" in response_lower:
+        if _OK_ACK.search(response_lower):
             return False
         
         # Continue on temperature reports or status updates
@@ -58,8 +61,7 @@ class GCodeSender:
         
         response_lower = response.lower()
         
-        # "ok" mesajı geldi - başarılı
-        if "ok" in response_lower:
+        if _OK_ACK.search(response_lower):
             return {"continue": False, "error": None, "ok": True}
         
         # Hata durumu
@@ -172,9 +174,8 @@ json.dumps(result)
     };
   } catch (error) {
     console.error('[PyodideGCodeSender] Error processing response:', error);
-    // Fallback to JavaScript with more aggressive "ok" detection
-    const responseLower = (response || '').toLowerCase().trim();
-    const hasOk = responseLower.includes('ok');
+    const responseLower = (response || '').toLowerCase();
+    const hasOk = /(?:^|\s)ok(?:\s|$)/i.test(responseLower);
     const hasError = responseLower.includes('error');
     
     console.log('[PyodideGCodeSender] Fallback - hasOk:', hasOk, 'hasError:', hasError, 'response:', responseLower);
