@@ -152,7 +152,7 @@ interface ViewerState {
 // Camera controls interface removed - not needed anymore
 
 const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = false, onClose, onFileLoad, onError, initialFile, isLoading = false, isAuth = true, onSendMessage, onNewChat, isPickPlaceMode = false, activeStoneTypeId = null }) => {
-  const { selectedDxfFile, setSelectedDxfFile, setParsedDxf, setMainGroup, mainGroup, modelTransform, setModelTransform } = useDxf();
+  const { selectedDxfFile, setSelectedDxfFile, setParsedDxf, setMainGroup, mainGroup, modelTransform, setModelTransform, setDxfScene } = useDxf();
   const { stoneTypes } = usePickPlace();
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -436,11 +436,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000); // Black background
     sceneRef.current = scene;
-
-    // Scene'i global olarak erişilebilir hale getir
-    if (typeof window !== 'undefined') {
-      (window as any).dxfScene = scene;
-    }
+    setDxfScene(scene);
 
     // Camera
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 100000);
@@ -1413,9 +1409,9 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
       (group.userData as any).fitSize = fitSize.clone();
 
       if (sceneRef.current) {
-        (window as any).dxfScene = sceneRef.current; // StripPreview için
+        setDxfScene(sceneRef.current);
         sceneRef.current.add(group);
-        setMainGroup(group); // Set mainGroup state for interactions
+        setMainGroup(group);
 
         // Restore selections by handle after loading new content with a delay
         // to ensure all materials and effects are properly initialized

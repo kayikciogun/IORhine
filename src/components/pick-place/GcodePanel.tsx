@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { usePickPlace } from '@/contexts/PickPlaceContext';
+import { useDxf } from '@/contexts/DxfContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,6 +30,7 @@ function getSender(): WebSerialGCodeSender {
 
 export default function GcodePanel() {
   const { stoneTypes, pickPlaceConfig, updatePickPlaceConfig } = usePickPlace();
+  const { dxfScene } = useDxf();
   const cfg = pickPlaceConfig;
 
   // Bağlantı
@@ -119,12 +121,11 @@ export default function GcodePanel() {
 
   // ── Placement G-code üret (sadece önizleme, probe/USB gerektirmez) ──────
   const handlePreview = () => {
-    if (typeof window === 'undefined' || !(window as any).dxfScene) {
+    if (!dxfScene) {
       addLog('✗ DXF sahnesi henüz yüklenmedi!');
       return;
     }
-    const scene = (window as any).dxfScene;
-    const { orders, stoneTypeMap } = buildPlacementOrders(scene, stoneTypes, cfg);
+    const { orders, stoneTypeMap } = buildPlacementOrders(dxfScene, stoneTypes, cfg);
     const pp = new Mach3PostProcessor(cfg);
     // Mock Z değerleri: stripZ=0, fabricZ=0
     // Gerçek makinede probe bu değerleri #500 ve #501'e kaydeder
@@ -140,12 +141,11 @@ export default function GcodePanel() {
 
   // ── Placement G-code üret + gönder ──────────────────────────────────────
   const handleGenerateAndSend = async () => {
-    if (typeof window === 'undefined' || !(window as any).dxfScene) {
+    if (!dxfScene) {
       addLog('✗ DXF sahnesi henüz yüklenmedi!');
       return;
     }
-    const scene = (window as any).dxfScene;
-    const { orders, stoneTypeMap } = buildPlacementOrders(scene, stoneTypes, cfg);
+    const { orders, stoneTypeMap } = buildPlacementOrders(dxfScene, stoneTypes, cfg);
     const pp = new Mach3PostProcessor(cfg);
     const result = pp.generate(orders, stoneTypeMap);
     setGcodeResult(result);

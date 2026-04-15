@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState } from "react";
 interface ModelTransform {
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
-  fileName: string; // Hangi dosya için saklı olduğunu bilmek için
+  fileName: string;
 }
 
 interface DxfContextType {
@@ -16,6 +16,9 @@ interface DxfContextType {
   setMainGroup: (group: any) => void;
   modelTransform: ModelTransform | null;
   setModelTransform: (transform: ModelTransform | null) => void;
+  // Scene erişimi (window.dxfScene yerine)
+  dxfScene: any | null;
+  setDxfScene: (scene: any) => void;
 }
 
 const DxfContext = createContext<DxfContextType | undefined>(undefined);
@@ -25,17 +28,20 @@ export const DxfProvider = ({ children }: { children: React.ReactNode }) => {
   const [parsedDxf, setParsedDxf] = useState<any>(null);
   const [mainGroup, setMainGroup] = useState<any>(null);
   const [modelTransform, setModelTransform] = useState<ModelTransform | null>(null);
-  
+  const [dxfScene, setDxfScene] = useState<any | null>(null);
+
   return (
-    <DxfContext.Provider value={{ 
-      selectedDxfFile, 
-      setSelectedDxfFile, 
-      parsedDxf, 
-      setParsedDxf, 
-      mainGroup, 
+    <DxfContext.Provider value={{
+      selectedDxfFile,
+      setSelectedDxfFile,
+      parsedDxf,
+      setParsedDxf,
+      mainGroup,
       setMainGroup,
       modelTransform,
-      setModelTransform
+      setModelTransform,
+      dxfScene,
+      setDxfScene,
     }}>
       {children}
     </DxfContext.Provider>

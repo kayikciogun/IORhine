@@ -186,7 +186,7 @@ export function pathToCavalierPolyline(path: Path, isClosedFlag: boolean = true)
         debug.log(`[offsetUtils] pathToCavalierPolyline: Rust/WASM uyumlu nesne - vertices sayısı: ${cavalierInput.vertexes.length}, isClosed: ${cavalierInput.isClosed}`);
         return cavalierInput;
     } catch (error) {
-        console.error("[offsetUtils] pathToCavalierPolyline: JS nesne dönüşüm hatası:", error);
+        debug.error("[offsetUtils] pathToCavalierPolyline: JS nesne dönüşüm hatası:", error);
         return null;
     }
 }
@@ -227,7 +227,7 @@ export function cavalierPolylineToPath(polyline: any): Path {
             debug.log(`[offsetUtils] Polyline → Path dönüştürme: ${result.length} segment oluştu`);
             return result;
         } catch (error) {
-            console.error("[offsetUtils] Yeni Polyline sınıfı dönüştürme hatası:", error);
+            debug.error("[offsetUtils] Yeni Polyline sınıfı dönüştürme hatası:", error);
         return [];
     }
     }
@@ -283,7 +283,7 @@ export function cavalierPolylineToPath(polyline: any): Path {
 export function createCavalierOffsets(path: Path, offset: number, forceClosed: boolean = true): Path[] {
     // Yol geçerlilik kontrolü
     if (!path || !Array.isArray(path) || path.length === 0) {
-        console.error("[offsetUtils] Geçersiz yol verisi:", path);
+        debug.error("[offsetUtils] Geçersiz yol verisi:", path);
         return [];
     }
     
@@ -323,7 +323,7 @@ export function createCavalierOffsets(path: Path, offset: number, forceClosed: b
     if (filteredPath.length < path.length) {
         debug.warn(`[offsetUtils] ${path.length - filteredPath.length} geçersiz segment filtrelendi.`);
         if (filteredPath.length < (forceClosed ? 2 : 1)) {
-            console.error("[offsetUtils] Filtreleme sonrası yetersiz segment sayısı, offsetleme atlanıyor.");
+            debug.error("[offsetUtils] Filtreleme sonrası yetersiz segment sayısı, offsetleme atlanıyor.");
             return [];
         }
     }
@@ -335,7 +335,7 @@ export function createCavalierOffsets(path: Path, offset: number, forceClosed: b
         // Rust/WASM uyumlu nesne formatına dönüştür
         const cavalierInputObject = pathToCavalierPolyline(filteredPath, forceClosed ? true : isClosedPath);
         if (!cavalierInputObject || !cavalierInputObject.vertexes) {
-            console.error("[offsetUtils] pathToCavalierPolyline'dan geçerli veri alınamadı veya vertexes alanı eksik.");
+            debug.error("[offsetUtils] pathToCavalierPolyline'dan geçerli veri alınamadı veya vertexes alanı eksik.");
             return [];
         }
         
@@ -459,11 +459,11 @@ export function createCavalierOffsets(path: Path, offset: number, forceClosed: b
             return resultPaths;
             
         } catch (error) {
-            console.error("[offsetUtils] cavcParallelOffset çağrısı hatası:", error);
+            debug.error("[offsetUtils] cavcParallelOffset çağrısı hatası:", error);
             return [];
         }
     } catch (error) {
-        console.error("[offsetUtils] Veri hazırlama hatası:", error);
+        debug.error("[offsetUtils] Veri hazırlama hatası:", error);
         return [];
     }
 }
@@ -510,13 +510,13 @@ export function createMultiPlineOffsets(
    // debug.log(`🔍 [MultiPlineOffset] WASM durumu: ready=${wasmReady}, multiPlineParallelOffset=${typeof multiPlineParallelOffset}`);
     
     if (!wasmReady) {
-        console.error(`❌ [MultiPlineOffset] WASM modülü henüz başlatılmamış! __CAVALIER_WASM_READY__=${wasmReady}`);
+        debug.error(`❌ [MultiPlineOffset] WASM modülü henüz başlatılmamış! __CAVALIER_WASM_READY__=${wasmReady}`);
         return [];
     }
     
     // WASM fonksiyon kontrolü
     if (typeof multiPlineParallelOffset !== 'function') {
-        console.error(`❌ [MultiPlineOffset] multiPlineParallelOffset fonksiyonu mevcut değil! Type: ${typeof multiPlineParallelOffset}`);
+        debug.error(`❌ [MultiPlineOffset] multiPlineParallelOffset fonksiyonu mevcut değil! Type: ${typeof multiPlineParallelOffset}`);
         return [];
     }
    // debug.log(`✅ [MultiPlineOffset] WASM hazır ve multiPlineParallelOffset fonksiyonu mevcut`);
@@ -537,7 +537,7 @@ export function createMultiPlineOffsets(
     }
     
     if (cavalierPlines.length === 0) {
-        console.error("❌ [MultiPlineOffset] Hiçbir path dönüştürülemedi");
+        debug.error("❌ [MultiPlineOffset] Hiçbir path dönüştürülemedi");
         return [];
     }
     
@@ -558,7 +558,7 @@ export function createMultiPlineOffsets(
                 offsetResult = multiPlineParallelOffset(currentPlines, offset);
              //   debug.log(`✅ [MultiPlineOffset] multiPlineParallelOffset başarılı:`, typeof offsetResult, offsetResult?.ccwPlines?.length, offsetResult?.cwPlines?.length);
             } catch (error) {
-                console.error(`❌ [MultiPlineOffset] multiPlineParallelOffset hatası:`, error);
+                debug.error(`❌ [MultiPlineOffset] multiPlineParallelOffset hatası:`, error);
                 break;
             }
             
@@ -588,7 +588,7 @@ export function createMultiPlineOffsets(
                             );
                             
                             if (hasInvalidCoords) {
-                                console.error(`❌ [MultiPlineOffset] CCW path ${i} geçersiz koordinatlar içeriyor!`);
+                                debug.error(`❌ [MultiPlineOffset] CCW path ${i} geçersiz koordinatlar içeriyor!`);
                                 continue;
                             }
                             
@@ -597,7 +597,7 @@ export function createMultiPlineOffsets(
                             debug.warn(`⚠️ [MultiPlineOffset] CCW pline ${i} boş path üretti`);
                         }
                     } catch (err) {
-                        console.error(`❌ [MultiPlineOffset] CCW pline ${i} dönüştürme hatası:`, err);
+                        debug.error(`❌ [MultiPlineOffset] CCW pline ${i} dönüştürme hatası:`, err);
                     }
                 }
             }
@@ -620,7 +620,7 @@ export function createMultiPlineOffsets(
                             );
                             
                             if (hasInvalidCoords) {
-                                console.error(`❌ [MultiPlineOffset] CW path ${i} geçersiz koordinatlar içeriyor!`);
+                                debug.error(`❌ [MultiPlineOffset] CW path ${i} geçersiz koordinatlar içeriyor!`);
                                 continue;
                             }
                             
@@ -629,7 +629,7 @@ export function createMultiPlineOffsets(
                             debug.warn(`⚠️ [MultiPlineOffset] CW pline ${i} boş path üretti`);
                         }
                     } catch (err) {
-                        console.error(`❌ [MultiPlineOffset] CW pline ${i} dönüştürme hatası:`, err);
+                        debug.error(`❌ [MultiPlineOffset] CW pline ${i} dönüştürme hatası:`, err);
                     }
                 }
             }
@@ -714,15 +714,15 @@ export function createMultiPlineOffsets(
         
         // Döngü güvenlik kontrolü
         if (iteration >= maxIterations) {
-            console.warn(`⚠️ [MultiPlineOffset] Maksimum iterasyon (${maxIterations}) limiti aşıldı!`);
-            console.warn(`   Offset işlemi tamamlanmamış olabilir. Son iterasyonda ${currentPlines.length} pline kaldı.`);
+            debug.warn(`⚠️ [MultiPlineOffset] Maksimum iterasyon (${maxIterations}) limiti aşıldı!`);
+            debug.warn(`   Offset işlemi tamamlanmamış olabilir. Son iterasyonda ${currentPlines.length} pline kaldı.`);
         }
         
      //   debug.log(`🎯 [MultiPlineOffset] Tamamlandı: ${iteration} iterasyon, toplam ${allIterationResults.length} sonuç grubu`);
         return allIterationResults;
         
     } catch (error) {
-        console.error("❌ [MultiPlineOffset] Hata:", error);
+        debug.error("❌ [MultiPlineOffset] Hata:", error);
         return allIterationResults; // Kısmi sonuçları döndür
     }
 }
@@ -743,7 +743,7 @@ export function createRawOffset(
     
     const cavalierPline = pathToCavalierPolyline(path, true);
     if (!cavalierPline) {
-        console.error("❌ [RawOffset] Path Cavalier formatına dönüştürülemedi");
+        debug.error("❌ [RawOffset] Path Cavalier formatına dönüştürülemedi");
         return { offsetPaths: [] };
     }
     
@@ -814,7 +814,7 @@ export function createRawOffset(
         return response;
         
             } catch (error) {
-        console.error("❌ [RawOffset] Hata:", error);
+        debug.error("❌ [RawOffset] Hata:", error);
         return { offsetPaths: [] };
     }
 }
@@ -948,7 +948,7 @@ export function convertVertexesToPath(vertexes: Array<[number, number, number]>,
                         end: endPt
                     });
                 } catch (err) {
-                    console.error("[offsetUtils] convertVertexesToPath: Yay hesaplama hatası:", err);
+                    debug.error("[offsetUtils] convertVertexesToPath: Yay hesaplama hatası:", err);
                     path.push({ type: 'Line', start: startPt, end: endPt });
                 }
             }
@@ -1033,7 +1033,7 @@ export function convertVertexesToPath(vertexes: Array<[number, number, number]>,
         
         return path;
     } catch (error) {
-        console.error("[offsetUtils] convertVertexesToPath: Path dönüştürme hatası:", error);
+        debug.error("[offsetUtils] convertVertexesToPath: Path dönüştürme hatası:", error);
         return [];
     }
 }

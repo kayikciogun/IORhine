@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useMemo } from 'react';
 import { usePickPlace } from '../../contexts/PickPlaceContext';
+import { useDxf } from '../../contexts/DxfContext';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -11,6 +12,7 @@ import { Path, ArcSegment } from '@/Utils/offsetUtils';
 
 export default function StripPreview() {
   const { stoneTypes, pickPlaceConfig: cfg, updatePickPlaceConfig } = usePickPlace();
+  const { dxfScene } = useDxf();
   const [cells, setCells] = useState<StripCell[]>([]);
   const [appliedConfig, setAppliedConfig] = useState(cfg);
 
@@ -44,12 +46,11 @@ export default function StripPreview() {
   }, [stoneTypes]);
 
   const handleGenerate = () => {
-    if (typeof window === 'undefined' || !(window as any).dxfScene) {
+    if (!dxfScene) {
       alert("DXF sahnesi henüz yüklenmedi!");
       return;
     }
-    const scene = (window as any).dxfScene;
-    const generated = generateStripData(scene, stoneTypes, cfg);
+    const generated = generateStripData(dxfScene, stoneTypes, cfg);
     setCells(generated);
     setAppliedConfig({ ...cfg });
   };

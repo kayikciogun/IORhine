@@ -47,11 +47,9 @@ export interface PickPlaceConfig {
 // Yerleştirme sırası
 export interface PlacementOrder {
   index: number;
-  pickX: number;      // Sabit (konveyör aynı noktaya getirir)
-  pickY: number;
-  pickZ: number;      // stoneType.pickZOffset
-  placeX: number;     // Desen koordinatı
-  placeY: number;
-  placeZ: number;     // stoneType.placeZOffset
-  placeAngle: number; // Desen açısı (°)
+  pickX: number;      // Strip üzerinde alma X
+  pickY: number;      // Strip üzerinde alma Y
+  placeX: number;     // Kumaş üzerinde bırakma X (DXF koordinatı)
+  placeY: number;     // Kumaş üzerinde bırakma Y
+  placeAngle: number; // Döndürme açısı (°)
 }

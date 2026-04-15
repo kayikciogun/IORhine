@@ -231,10 +231,11 @@ export class Mach3PostProcessor {
 
     orders.forEach((order, i) => {
       const key = `${order.placeX.toFixed(3)}_${order.placeY.toFixed(3)}`;
-      const st: StoneType = stoneTypeMap.get(key) ?? {
-        id: '', name: 'Bilinmiyor', color: '#fff',
-        pickZOffset: order.pickZ, placeZOffset: order.placeZ, contourIds: [],
-      };
+      const st = stoneTypeMap.get(key);
+      if (!st) {
+        console.warn(`StoneType not found for placeX=${order.placeX}, placeY=${order.placeY}`);
+        return;
+      }
       this.singleStone(order, st, i + 1);
     });
 
@@ -295,7 +296,7 @@ export function buildPlacementOrders(
       const key = `${placeX.toFixed(3)}_${placeY.toFixed(3)}`;
       stoneTypeMap.set(key, st);
 
-      orders.push({ index, pickX, pickY, pickZ: st.pickZOffset, placeX, placeY, placeZ: st.placeZOffset, placeAngle });
+      orders.push({ index, pickX, pickY, placeX, placeY, placeAngle });
       index++;
     }
   }
