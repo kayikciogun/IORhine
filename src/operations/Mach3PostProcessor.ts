@@ -25,6 +25,7 @@
  */
 
 import { PickPlaceConfig, StoneType, PlacementOrder } from '@/types/pickplace';
+import { calcAngleFromSceneObject } from '@/Utils/contourAngle';
 
 export interface GcodeResult {
   gcode: string;
@@ -258,8 +259,6 @@ export function buildPlacementOrders(
   stoneTypes: StoneType[],
   cfg: PickPlaceConfig,
 ): { orders: PlacementOrder[]; stoneTypeMap: Map<string, StoneType> } {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { calcAngleFromSceneObject } = require('@/Utils/contourAngle');
   const orders: PlacementOrder[] = [];
   const stoneTypeMap = new Map<string, StoneType>();
   let index = 0;

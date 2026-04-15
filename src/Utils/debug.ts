@@ -19,7 +19,7 @@ export const debug = {
     warn: (...args: AnyArgs) => { if (DEBUG) console.warn(...args); },
     group: (...args: AnyArgs) => { if (DEBUG && (console as any).group) (console as any).group(...args); },
     groupEnd: () => { if (DEBUG && (console as any).groupEnd) (console as any).groupEnd(); },
-    error: (...args: AnyArgs) => { if (DEBUG) console.error(...args); }
+    error: (...args: AnyArgs) => { console.error(...args); }
 };
 
 // DEBUG kapalıysa global console.log/warn/group çağrılarını sustur
