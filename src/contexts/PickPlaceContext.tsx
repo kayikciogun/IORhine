@@ -1,6 +1,9 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, {
+  createContext, useContext, useState, useEffect, useRef,
+  useCallback, useMemo, ReactNode,
+} from 'react';
 import type { StoneType, PickPlaceConfig } from '../types/pickplace';
 import { loadPickPlaceSnapshot, savePickPlaceSnapshot } from '@/lib/appSessionStore';
 
@@ -30,7 +33,7 @@ const defaultPickPlaceConfig: PickPlaceConfig = {
   defaultStonePlaceZMm: 5,
   safeZ: 10,
   rapidFeed: 10000,
-  jogFeed: 30000,
+  jogFeed: 3000,
   pickFeed: 3000,
   placeFeed: 2000,
   rotationAxis: 'E',
@@ -40,14 +43,55 @@ const defaultPickPlaceConfig: PickPlaceConfig = {
   vacuumOffDwell: 0.5,
   vacuumOnCode: 'M106 S255',
   vacuumOffCode: 'M107',
-  firmware: 'marlin', // Ender 3 (Marlin) için
-  marlinWorkspaceOriginX: 107.5,
-  marlinWorkspaceOriginY: 107.5,
-  marlinDxfAtG92X: 0,
-  marlinDxfAtG92Y: 0,
+  firmware: 'marlin',
   marlinStripZMm: 0,
   marlinFabricZMm: 0,
+  releaseMotorsAtProgramEnd: false,
 };
+
+/** localStorage / birleştirme sonrası bozuk tipleri düzeltir (Input + fmt için güvenli sayılar). */
+function toFiniteNumber(v: unknown, fallback: number): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = parseFloat(v.trim().replace(',', '.'));
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+}
+
+function sanitizePickPlaceConfig(input: PickPlaceConfig): PickPlaceConfig {
+  const d = defaultPickPlaceConfig;
+  const o: PickPlaceConfig = { ...input };
+  const oMut = o as unknown as Record<string, unknown>;
+  (Object.keys(d) as (keyof PickPlaceConfig)[]).forEach((key) => {
+    const defVal = d[key];
+    const cur = o[key];
+    if (typeof defVal === 'number') {
+      oMut[key as string] = toFiniteNumber(cur, defVal);
+    } else if (typeof defVal === 'string') {
+      oMut[key as string] = typeof cur === 'string' ? cur : defVal;
+    } else if (typeof defVal === 'boolean') {
+      oMut[key as string] = typeof cur === 'boolean' ? cur : defVal;
+    }
+  });
+  if (o.rotationAxis !== 'E' && o.rotationAxis !== 'A') o.rotationAxis = d.rotationAxis;
+  if (o.firmware !== 'marlin' && o.firmware !== 'standard') o.firmware = d.firmware;
+  return o;
+}
+
+function sanitizeStoneType(st: StoneType): StoneType {
+  return {
+    ...st,
+    id: typeof st.id === 'string' ? st.id : `stone_${Date.now()}`,
+    name: typeof st.name === 'string' ? st.name : 'Taş',
+    color: typeof st.color === 'string' ? st.color : '#888888',
+    pickZOffset: toFiniteNumber(st.pickZOffset, 0),
+    placeZOffset: toFiniteNumber(st.placeZOffset, 0),
+    contourIds: Array.isArray(st.contourIds)
+      ? st.contourIds.filter((id): id is string => typeof id === 'string')
+      : [],
+  };
+}
 
 const PickPlaceContext = createContext<PickPlaceContextType | undefined>(undefined);
 
@@ -61,18 +105,15 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
   useEffect(() => {
     const snap = loadPickPlaceSnapshot();
     if (snap) {
-      setStoneTypes(Array.isArray(snap.stoneTypes) ? snap.stoneTypes : []);
+      setStoneTypes(
+        Array.isArray(snap.stoneTypes)
+          ? snap.stoneTypes.map(sanitizeStoneType)
+          : [],
+      );
       setActiveStoneTypeId(snap.activeStoneTypeId ?? null);
-      // localStorage’taki JSON tam PickPlaceConfig olmayabilir; `in` ile daraltma never üretmesin diye Partial
       const raw = snap.pickPlaceConfig as Partial<PickPlaceConfig>;
       const merged: PickPlaceConfig = { ...defaultPickPlaceConfig, ...raw };
-      if (!('marlinDxfAtG92X' in raw) || typeof raw.marlinDxfAtG92X !== 'number') {
-        merged.marlinDxfAtG92X =
-          raw.marlinWorkspaceOriginX ?? defaultPickPlaceConfig.marlinWorkspaceOriginX;
-        merged.marlinDxfAtG92Y =
-          raw.marlinWorkspaceOriginY ?? defaultPickPlaceConfig.marlinWorkspaceOriginY;
-      }
-      setPickPlaceConfig(merged);
+      setPickPlaceConfig(sanitizePickPlaceConfig(merged));
     }
     pickPlaceStorageReadyRef.current = true;
   }, []);
@@ -85,22 +126,26 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
     return () => window.clearTimeout(t);
   }, [stoneTypes, pickPlaceConfig, activeStoneTypeId]);
 
-  const addStoneType = (stoneType: StoneType) => setStoneTypes(prev => [...prev, stoneType]);
+  // ─── Stabil callback'ler (useCallback + functional update → dep'siz) ──────
 
-  const updateStoneType = (id: string, updates: Partial<StoneType>) => {
+  const addStoneType = useCallback((stoneType: StoneType) => {
+    setStoneTypes(prev => [...prev, stoneType]);
+  }, []);
+
+  const updateStoneType = useCallback((id: string, updates: Partial<StoneType>) => {
     setStoneTypes(prev => prev.map(st => st.id === id ? { ...st, ...updates } : st));
-  };
+  }, []);
 
-  const removeStoneType = (id: string) => {
+  const removeStoneType = useCallback((id: string) => {
     setStoneTypes(prev => prev.filter(st => st.id !== id));
-    if (activeStoneTypeId === id) setActiveStoneTypeId(null);
-  };
+    setActiveStoneTypeId(prev => (prev === id ? null : prev));
+  }, []);
 
-  const updatePickPlaceConfig = (updates: Partial<PickPlaceConfig>) => {
-    setPickPlaceConfig(prev => ({ ...prev, ...updates }));
-  };
+  const updatePickPlaceConfig = useCallback((updates: Partial<PickPlaceConfig>) => {
+    setPickPlaceConfig(prev => sanitizePickPlaceConfig({ ...prev, ...updates }));
+  }, []);
 
-  const assignContoursToType = (stoneTypeId: string, contourIds: string[]) => {
+  const assignContoursToType = useCallback((stoneTypeId: string, contourIds: string[]) => {
     setStoneTypes(prev => prev.map(st => {
       if (st.id === stoneTypeId) {
         const newContours = [...new Set([...st.contourIds, ...contourIds])];
@@ -108,38 +153,52 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
       }
       return { ...st, contourIds: st.contourIds.filter(id => !contourIds.includes(id)) };
     }));
-  };
+  }, []);
 
-  const unassignContours = (contourIds: string[]) => {
+  const unassignContours = useCallback((contourIds: string[]) => {
     setStoneTypes(prev => prev.map(st => ({
       ...st,
       contourIds: st.contourIds.filter(id => !contourIds.includes(id))
     })));
-  };
+  }, []);
 
-  const reorderStoneTypes = (startIndex: number, endIndex: number) => {
+  const reorderStoneTypes = useCallback((startIndex: number, endIndex: number) => {
     setStoneTypes(prev => {
       const result = Array.from(prev);
       const [removed] = result.splice(startIndex, 1);
       result.splice(endIndex, 0, removed);
       return result;
     });
-  };
+  }, []);
+
+  // ─── Context değeri — sadece gerçek state değişince yeniden üretilir ──────
+  const value = useMemo<PickPlaceContextType>(() => ({
+    stoneTypes,
+    activeStoneTypeId,
+    pickPlaceConfig,
+    addStoneType,
+    updateStoneType,
+    removeStoneType,
+    setActiveStoneTypeId,
+    updatePickPlaceConfig,
+    assignContoursToType,
+    unassignContours,
+    reorderStoneTypes,
+  }), [
+    stoneTypes,
+    activeStoneTypeId,
+    pickPlaceConfig,
+    addStoneType,
+    updateStoneType,
+    removeStoneType,
+    updatePickPlaceConfig,
+    assignContoursToType,
+    unassignContours,
+    reorderStoneTypes,
+  ]);
 
   return (
-    <PickPlaceContext.Provider value={{
-      stoneTypes,
-      activeStoneTypeId,
-      pickPlaceConfig,
-      addStoneType,
-      updateStoneType,
-      removeStoneType,
-      setActiveStoneTypeId,
-      updatePickPlaceConfig,
-      assignContoursToType,
-      unassignContours,
-      reorderStoneTypes
-    }}>
+    <PickPlaceContext.Provider value={value}>
       {children}
     </PickPlaceContext.Provider>
   );

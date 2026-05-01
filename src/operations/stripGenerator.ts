@@ -20,16 +20,16 @@ export function generateStripData(
   const cells: StripCell[] = [];
   let currentIndex = 0;
 
-  // Tüm taş tiplerindeki contourId'leri sırayla topla
+  // O(1) handle → sahne objesi — tek traverse ile
+  const handleIndex = new Map<string, THREE.Object3D>();
+  scene.traverse((obj) => {
+    const h = obj.userData?.handle;
+    if (h) handleIndex.set(h, obj);
+  });
+
   for (const st of stoneTypes) {
     for (const handle of st.contourIds) {
-      // Scene içinden mesh'i bul
-      let targetObj: THREE.Object3D | null = null;
-      scene.traverse((obj) => {
-        if (obj.userData?.handle === handle) {
-          targetObj = obj;
-        }
-      });
+      const targetObj = handleIndex.get(handle) ?? null;
 
       if (!targetObj) continue;
 
@@ -136,13 +136,12 @@ export function generateStripData(
         }
       }
 
-      // Grid — buildPlacementOrders ile aynı: satır arttıkça dünya +Y (DXF/şerit)
+      // Grid — buildPlacementOrders ile aynı pitch: cellSize + cellGap
+      const pitch = config.cellSize + (config.cellGap ?? 0);
       const col = currentIndex % config.rowLength;
       const row = Math.floor(currentIndex / config.rowLength);
-      const cellX =
-        config.stripOriginX + col * config.cellSize + config.cellSize / 2;
-      const cellY =
-        config.stripOriginY + row * config.cellSize + config.cellSize / 2;
+      const cellX = config.stripOriginX + col * pitch + config.cellSize / 2;
+      const cellY = config.stripOriginY + row * pitch + config.cellSize / 2;
 
       cells.push({
         x: cellX,

@@ -1,5 +1,5 @@
 'use client'
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
 import { loadDxfBlob, saveDxfMeta, loadDxfMeta, clearDxfBlob } from '@/lib/appSessionStore';
 
 interface ModelTransform {
@@ -80,21 +80,23 @@ export const DxfProvider = ({ children }: { children: React.ReactNode }) => {
     return () => window.clearTimeout(t);
   }, [modelTransform]);
 
+  const value = useMemo(() => ({
+    dxfSessionHydrated,
+    selectedDxfFile,
+    setSelectedDxfFile,
+    parsedDxf,
+    setParsedDxf,
+    mainGroup,
+    setMainGroup,
+    modelTransform,
+    setModelTransform,
+    dxfScene,
+    setDxfScene,
+    clearDxfSession,
+  }), [dxfSessionHydrated, selectedDxfFile, parsedDxf, mainGroup, modelTransform, dxfScene, clearDxfSession]);
+
   return (
-    <DxfContext.Provider value={{
-      dxfSessionHydrated,
-      selectedDxfFile,
-      setSelectedDxfFile,
-      parsedDxf,
-      setParsedDxf,
-      mainGroup,
-      setMainGroup,
-      modelTransform,
-      setModelTransform,
-      dxfScene,
-      setDxfScene,
-      clearDxfSession,
-    }}>
+    <DxfContext.Provider value={value}>
       {children}
     </DxfContext.Provider>
   );

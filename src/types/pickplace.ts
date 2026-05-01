@@ -25,7 +25,7 @@ export interface PickPlaceConfig {
   // Makine / İşlem
   safeZ: number;
   rapidFeed: number;
-  jogFeed: number;           // JOG hareketi (G0) mm/dk — modal ve manuel jog
+  jogFeed: number;           // JOG: X/Y/Z göreli hareket + JOG modalında E/A dönüş (mm/dk)
   pickFeed: number;
   placeFeed: number;
   rotationAxis: 'E' | 'A';
@@ -36,25 +36,19 @@ export interface PickPlaceConfig {
   vacuumOnCode: string;     // "M10" veya "M106 S255"
   vacuumOffCode: string;    // "M11" veya "M107"
   firmware: 'marlin' | 'standard'; // Firmware tipi (Ender3=Marlin, standart CNC=FluidNC/Mach3)
-  /** Marlin: G28 sonrası G92 öncesi nozzle bu makine XY (mm) konumuna G0 ile gider. */
-  marlinWorkspaceOriginX: number;
-  marlinWorkspaceOriginY: number;
-  /**
-   * Marlin: G92 yapılan fiziksel noktanın strip+DXF dünyasındaki koordinatı (mm).
-   * (0,0) = çizim orijinini tezgâhta G92 ile sıfırladınız (çoğu DXF).
-   * Eski tek-sayı davranışı: burayı makine G92 ile aynı sayı yapın (çizim makine mm ile hizalıysa).
-   */
-  marlinDxfAtG92X: number;
-  marlinDxfAtG92Y: number;
-  /** Marlin: G92 sonrası strip yüzeyinde nozzle Z (mm) — elle ölçüp girin. */
+  /** Marlin: strip yüzeyinde nozzle Z (mm) — elle ölçüp girin. */
   marlinStripZMm: number;
-  /** Marlin: G92 sonrası kumaş yüzeyinde nozzle Z (mm) — elle ölçüp girin. */
+  /** Marlin: kumaş yüzeyinde nozzle Z (mm) — elle ölçüp girin. */
   marlinFabricZMm: number;
+
+  /** Marlin program sonu: M84 ile motorları serbest bırak. Kapalı önerilir — serbestte eksen kayabilir. */
+  releaseMotorsAtProgramEnd: boolean;
 }
 
 // Yerleştirme sırası
 export interface PlacementOrder {
   index: number;
+  stoneTypeId: string; // Hangi StoneType'a ait (çakışmayan lookup için)
   pickX: number;      // Strip üzerinde alma X
   pickY: number;      // Strip üzerinde alma Y
   placeX: number;     // Kumaş üzerinde bırakma X (DXF koordinatı)

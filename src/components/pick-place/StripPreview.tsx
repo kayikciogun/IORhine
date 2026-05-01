@@ -6,15 +6,34 @@ import { useDxf } from '../../contexts/DxfContext';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Download, LayoutGrid, AlertCircle } from 'lucide-react';
+import { Download, LayoutGrid, AlertCircle, RefreshCw } from 'lucide-react';
 import { generateStripData, exportStripToDxf, StripCell } from '@/operations/stripGenerator';
 import { Path, ArcSegment } from '@/Utils/offsetUtils';
+
+function finiteOrEmpty(v: unknown): number | '' {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const n = parseFloat(v.replace(',', '.'));
+    if (Number.isFinite(n)) return n;
+  }
+  return '';
+}
 
 export default function StripPreview() {
   const { stoneTypes, pickPlaceConfig: cfg, updatePickPlaceConfig } = usePickPlace();
   const { dxfScene } = useDxf();
   const [cells, setCells] = useState<StripCell[]>([]);
   const [appliedConfig, setAppliedConfig] = useState(cfg);
+  const [isStale, setIsStale] = useState(false);
+
+  // Önizleme varken ayar veya taş değişirse "bayat" uyarısı göster
+  useEffect(() => {
+    if (cells.length > 0) setIsStale(true);
+  }, [
+    stoneTypes,
+    cfg.cellSize, cfg.rowLength, cfg.cellGap,
+    cfg.contourOffset, cfg.stripOriginX, cfg.stripOriginY,
+  ]);
 
   const pathToSvgString = (path: Path, offsetX: number, offsetY: number) => {
     if (!path || path.length === 0) return '';
@@ -53,6 +72,7 @@ export default function StripPreview() {
     const generated = generateStripData(dxfScene, stoneTypes, cfg);
     setCells(generated);
     setAppliedConfig({ ...cfg });
+    setIsStale(false);
   };
 
   const handleDownloadDxf = () => {
@@ -72,7 +92,11 @@ export default function StripPreview() {
 
   const stripBounds = useMemo(() => {
     if (cells.length === 0) return null;
-    const hs = appliedConfig.cellSize / 2;
+    const cellW =
+      typeof appliedConfig.cellSize === 'number' && Number.isFinite(appliedConfig.cellSize)
+        ? appliedConfig.cellSize
+        : 10;
+    const hs = cellW / 2;
     let minX = Infinity;
     let maxX = -Infinity;
     let minSvgY = Infinity;
@@ -95,6 +119,10 @@ export default function StripPreview() {
       vbH: maxSvgY - minSvgY + pad * 2,
     };
   }, [cells, appliedConfig.cellSize]);
+
+  const rowLenUi = finiteOrEmpty(cfg.rowLength);
+  const cellSzUi = finiteOrEmpty(cfg.cellSize);
+  const contourUi = finiteOrEmpty(cfg.contourOffset);
 
   return (
     <div className="flex flex-col h-full bg-background/50">
@@ -131,8 +159,8 @@ export default function StripPreview() {
           <Input
             type="number"
             className="w-12 h-6 text-xs px-1"
-            value={cfg.rowLength}
-            onChange={(e) => updatePickPlaceConfig({ rowLength: parseInt(e.target.value) || 1 })}
+            value={rowLenUi === '' ? '' : rowLenUi}
+            onChange={(e) => updatePickPlaceConfig({ rowLength: parseInt(e.target.value, 10) || 1 })}
             min={1}
           />
         </div>
@@ -141,7 +169,7 @@ export default function StripPreview() {
           <Input
             type="number"
             className="w-12 h-6 text-xs px-1"
-            value={cfg.cellSize}
+            value={cellSzUi === '' ? '' : cellSzUi}
             onChange={(e) => updatePickPlaceConfig({ cellSize: parseFloat(e.target.value) || 10 })}
             min={5}
           />
@@ -152,12 +180,19 @@ export default function StripPreview() {
             type="number"
             step="0.1"
             className="w-12 h-6 text-xs px-1"
-            value={cfg.contourOffset}
+            value={contourUi === '' ? '' : contourUi}
             onChange={(e) => updatePickPlaceConfig({ contourOffset: parseFloat(e.target.value) || 0 })}
             min={0}
           />
         </div>
       </div>
+
+      {isStale && cells.length > 0 && (
+        <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11px]">
+          <RefreshCw className="w-3 h-3 shrink-0" />
+          <span>Ayarlar değişti — önizleme güncel değil. Yeniden üretin.</span>
+        </div>
+      )}
 
       {totalStones === 0 ? (
         <div className="text-center p-4 m-auto border border-dashed rounded-lg text-muted-foreground w-full">
@@ -183,7 +218,11 @@ export default function StripPreview() {
               className="mt-2 max-h-[min(52vh,420px)] w-full bg-background border shadow-sm"
             >
               {cells.map((cell, i) => {
-                const hs = appliedConfig.cellSize / 2;
+                const cellDraw =
+                  typeof appliedConfig.cellSize === 'number' && Number.isFinite(appliedConfig.cellSize)
+                    ? appliedConfig.cellSize
+                    : 10;
+                const hs = cellDraw / 2;
                 // Dünya +Y = şeritte yukarı; SVG +y aşağı olduğu için Y ters (path ile aynı mantık)
                 const svgYTop = -cell.y - hs;
                 return (
@@ -191,8 +230,8 @@ export default function StripPreview() {
                     <rect
                       x={cell.x - hs}
                       y={svgYTop}
-                      width={appliedConfig.cellSize}
-                      height={appliedConfig.cellSize}
+                      width={cellDraw}
+                      height={cellDraw}
                       fill="none"
                       stroke="currentColor"
                       strokeOpacity="0.2"

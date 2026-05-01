@@ -358,6 +358,24 @@ export class WebSerialGCodeSender {
   }
 
   /**
+   * stopSending sonrası veya stream koptuysa reader/writer'ı porttan yeniden alır (bekleme yok).
+   */
+  private reacquireStreamsIfNeeded(): void {
+    if (!this.serialPort?.port) return;
+    const p = this.serialPort.port;
+    try {
+      if (!this.reader && p.readable) {
+        this.reader = p.readable.getReader();
+      }
+      if (!this.writer && p.writable) {
+        this.writer = p.writable.getWriter();
+      }
+    } catch (e) {
+      console.warn('[WebSerialGCodeSender] reacquireStreamsIfNeeded:', e);
+    }
+  }
+
+  /**
    * Write data to serial port
    */
   private async write(data: Uint8Array): Promise<void> {
@@ -379,6 +397,11 @@ export class WebSerialGCodeSender {
   async sendGCode(gcodeLines: string[]): Promise<void> {
     if (!this.serialPort) {
       throw new Error('Not connected');
+    }
+
+    this.reacquireStreamsIfNeeded();
+    if (!this.reader || !this.writer) {
+      throw new Error('Seri port akışı kapalı — bağlantıyı kesip yeniden bağlanın');
     }
 
     if (this.isSending) {

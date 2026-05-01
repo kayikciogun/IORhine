@@ -9,14 +9,62 @@ import { Label } from '@/components/ui/label';
 import {
   Cpu, Play, Settings2, ChevronDown, ChevronUp,
   Clock, Hash, Usb, Square,
-  CheckCircle2, Radio, Download, Gamepad2, Send, Trash2,
+  CheckCircle2, Radio, Download, Gamepad2, Send, Trash2, OctagonAlert,
 } from 'lucide-react';
 import {
   buildPlacementOrders, Mach3PostProcessor,
   GcodeResult,
 } from '@/operations/Mach3PostProcessor';
+import type { PickPlaceConfig } from '@/types/pickplace';
 import { WebSerialGCodeSender, type SerialLogEntry } from '@/services/webSerialGcodeSender';
 import { clearAppSession } from '@/lib/appSessionStore';
+
+// ─── Num: ayar paneli için sayısal input (bileşen dışında — kararlı kimlik) ──
+function Num({ label, cfgKey, step = 1, unit }: {
+  label: string;
+  cfgKey: keyof PickPlaceConfig;
+  step?: number;
+  unit?: string;
+}) {
+  const { pickPlaceConfig: cfg, updatePickPlaceConfig } = usePickPlace();
+  const rawVal = cfg[cfgKey];
+  const displayVal =
+    typeof rawVal === 'number' && Number.isFinite(rawVal)
+      ? rawVal
+      : typeof rawVal === 'string'
+        ? (() => {
+            const p = parseFloat(String(rawVal).replace(',', '.'));
+            return Number.isFinite(p) ? p : '';
+          })()
+        : '';
+  return (
+    <div>
+      <Label className="text-[10px] text-muted-foreground">
+        {label}{unit && <span className="opacity-60"> ({unit})</span>}
+      </Label>
+      <Input
+        type="number"
+        step={step}
+        className="h-6 text-xs mt-0.5 px-1"
+        value={displayVal === '' ? '' : displayVal}
+        onChange={e => {
+          const parsed = parseFloat(e.target.value);
+          if (!Number.isNaN(parsed)) {
+            updatePickPlaceConfig({ [cfgKey]: parsed });
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+/** JOG input: virgül/nokta ondalık, boş veya geçersiz → null */
+function parseJogNumber(s: string): number | null {
+  const t = s.trim().replace(',', '.');
+  if (t === '') return null;
+  const n = parseFloat(t);
+  return Number.isFinite(n) ? n : null;
+}
 
 // ─── Bağlantı durumu tipi ────────────────────────────────────────────────────
 type ConnState = 'disconnected' | 'connecting' | 'connected';
@@ -45,7 +93,12 @@ export default function GcodePanel() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showJog, setShowJog] = useState(false);
-  const [jogStep, setJogStep] = useState(1);
+  /** JOG: göreli hareket adımı (mm) — metin input */
+  const [jogMmText, setJogMmText] = useState('1');
+  /** JOG: F hızı (mm/dk) — metin input; geçerliyse pickPlaceConfig ile senkron */
+  const [jogFeedText, setJogFeedText] = useState('');
+  /** JOG: kafa mutlak hedef açı (derece) — E/A */
+  const [jogRotateDeg, setJogRotateDeg] = useState('0');
   const [jogGcodeText, setJogGcodeText] = useState('');
   const [cncTerminalLines, setCncTerminalLines] = useState<string[]>([]);
   const logRef = useRef<HTMLPreElement>(null);
@@ -88,6 +141,12 @@ export default function GcodePanel() {
     const el = cncTerminalRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [cncTerminalLines, showJog]);
+
+  /** JOG açılırken F alanını ayarlardaki jogFeed ile doldur (yazarken cfg ile döngüye girmemek için sadece showJog) */
+  useEffect(() => {
+    if (showJog) setJogFeedText(String(cfg.jogFeed));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnız modal açılışında senkron
+  }, [showJog]);
 
   // ── Bağlan / Bağlantıyı Kes ─────────────────────────────────────────────
   const handleConnect = async () => {
@@ -148,25 +207,83 @@ export default function GcodePanel() {
   };
 
   const handleJogMove = (axis: 'X' | 'Y' | 'Z', dir: -1 | 1) => {
-    const feed = Math.max(1, cfg.jogFeed);
-    const delta = dir * jogStep;
+    const step = parseJogNumber(jogMmText);
+    if (step === null || step <= 0) {
+      addLog('⚠ Adım (mm): pozitif bir sayı girin');
+      return;
+    }
+    const feedRaw = parseJogNumber(jogFeedText);
+    if (feedRaw === null || feedRaw < 1) {
+      addLog('⚠ F (mm/dk): en az 1 girin');
+      return;
+    }
+    const feed = Math.max(1, Math.round(feedRaw));
+    const delta = dir * step;
     void sendJogLines(
-      ['G91', `G0 ${axis}${delta} F${feed}`, 'G90'],
-      `JOG: G91 → ${axis}${delta >= 0 ? '+' : ''}${delta}mm @F${feed} → G90`,
+      ['G91', `G1 ${axis}${delta} F${feed}`, 'G90'],
+      `JOG: G91 → G1 ${axis}${delta >= 0 ? '+' : ''}${delta}mm @F${feed} → G90`,
     );
   };
 
-  const handleJogHome = () => {
-    sendJogCommand('G28');
+  /** Dönüş ekseni: mutlak hedef. JOG F = F input ile aynı. Marlin+E: M302, M82, G1 E, M83 */
+  const handleJogGoToRotationAngle = () => {
+    const ax = cfg.rotationAxis;
+    const feedRaw = parseJogNumber(jogFeedText);
+    if (feedRaw === null || feedRaw < 1) {
+      addLog('⚠ F (mm/dk): en az 1 girin');
+      return;
+    }
+    const feed = Math.max(1, Math.round(feedRaw));
+    const raw = parseFloat(String(jogRotateDeg).trim().replace(',', '.'));
+    if (!Number.isFinite(raw)) {
+      addLog('⚠ Geçerli bir derece girin');
+      return;
+    }
+    let angleStr = raw.toFixed(2);
+    if (angleStr.includes('.')) angleStr = angleStr.replace(/\.?0+$/, '');
+    const coldOk = cfg.firmware === 'marlin' && ax === 'E';
+    const lines = coldOk
+      ? ['M302 P1', 'M82', `G1 ${ax}${angleStr} F${feed}`, 'M83']
+      : ['G90', `G1 ${ax}${angleStr} F${feed}`];
+    const logExtra = coldOk ? 'M302 P1 → M82 → ' : 'G90 → ';
+    void sendJogLines(
+      lines,
+      `JOG: ${logExtra}${ax}${angleStr}° @F${feed}${coldOk ? ' → M83' : ''}`,
+    );
   };
 
   const handleJogSafeZ = () => {
-    sendJogCommand(`G0 Z${cfg.safeZ}`);
+    sendJogCommand(`G1 Z${cfg.safeZ} F${Math.max(1, Math.round(cfg.jogFeed))}`);
   };
 
-  const handleJogZeroXY = () => {
-    sendJogCommand('G92 X0 Y0 Z0');
-    addLog('XYZ sıfırlandı (G92)');
+  const handleJogZeroZ = () => {
+    sendJogCommand('G92 Z0');
+    addLog('Z tablo sıfırı (G92 Z0)');
+  };
+
+  /**
+   * JOG / gönderim kuyruğunu keser. Marlin: yalnızca M410 (plan iptali).
+   * M112 gönderilmez — Marlin kill() durumuna girer ve M999 / güç döngüsü gerekir.
+   */
+  const handleJogEmergencyStop = async () => {
+    if (connState !== 'connected') {
+      addLog('⚠ Bağlı değil!');
+      return;
+    }
+    try {
+      await getSender().stopSending();
+      setSendState('idle');
+      setProgress(null);
+      const sender = getSender();
+      if (cfg.firmware === 'marlin') {
+        await sender.sendGCode(['M410']);
+        addLog('Durdur: gönderici kesildi; Marlin M410 (plan temizle). Sonraki JOG/G-code normal çalışmalı.');
+      } else {
+        addLog('Durdur: gönderici kesildi (standart mod — ek firmware komutu yok).');
+      }
+    } catch (e: any) {
+      addLog(`✗ Durdur: ${e.message}`);
+    }
   };
 
   const sendJogBuffer = async () => {
@@ -196,10 +313,10 @@ export default function GcodePanel() {
       addLog('✗ DXF sahnesi henüz yüklenmedi!');
       return;
     }
-    const { orders, stoneTypeMap } = buildPlacementOrders(dxfScene, stoneTypes, cfg);
+    const orders = buildPlacementOrders(dxfScene, stoneTypes, cfg);
     const pp = new Mach3PostProcessor(cfg);
     pp.enableSimulation(0, 0);
-    const result = pp.generate(orders, stoneTypeMap);
+    const result = pp.generate(orders, stoneTypes);
     pp.disableSimulation();
     setGcodeResult(result);
 
@@ -214,9 +331,9 @@ export default function GcodePanel() {
       addLog('✗ DXF sahnesi henüz yüklenmedi!');
       return;
     }
-    const { orders, stoneTypeMap } = buildPlacementOrders(dxfScene, stoneTypes, cfg);
+    const orders = buildPlacementOrders(dxfScene, stoneTypes, cfg);
     const pp = new Mach3PostProcessor(cfg);
-    const result = pp.generate(orders, stoneTypeMap);
+    const result = pp.generate(orders, stoneTypes);
     setGcodeResult(result);
 
     addLog(`── ${result.totalStones} taş → ${result.lines} satır G-Code üretildi ──`);
@@ -266,22 +383,6 @@ export default function GcodePanel() {
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
   };
-
-  // ── Input helper ─────────────────────────────────────────────────────────
-  const Num = ({ label, cfgKey, step = 1, unit }: {
-    label: string; cfgKey: keyof typeof cfg; step?: number; unit?: string;
-  }) => (
-    <div>
-      <Label className="text-[10px] text-muted-foreground">
-        {label}{unit && <span className="opacity-60"> ({unit})</span>}
-      </Label>
-      <Input type="number" step={step}
-        className="h-6 text-xs mt-0.5 px-1"
-        value={cfg[cfgKey] as number}
-        onChange={e => updatePickPlaceConfig({ [cfgKey]: parseFloat(e.target.value) || 0 })}
-      />
-    </div>
-  );
 
   const isBusy = sendState === 'sending';
 
@@ -473,34 +574,37 @@ export default function GcodePanel() {
             </div>
             <p className="text-[10px] text-muted-foreground mt-1">
               {cfg.firmware === 'marlin'
-                ? 'G28 → Z güvenli → iş alanı XY → G92 X0 Y0 → M83; bitiş: Z güvenli → G28 X Y → M84'
-                : 'G90/G91 (absolute/relative), M30 (program sonu)'}
+                ? `G21 G90; M83 (+ isteğe M302). XY doğrudan DXF/strip mm — orijin program öncesi tezgahta (G28/G92/jog) siz; son: güvenli Z${cfg.releaseMotorsAtProgramEnd ? ' + M84' : ''}.`
+                : 'G21 G90 G17; program sonu güvenli Z + M30. XY çizim mm (WCS).'}
             </p>
             {cfg.firmware === 'marlin' && (
               <div className="mt-2 space-y-1.5 rounded-md border border-border/70 bg-muted/20 p-2">
-                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Marlin G92 (iki ayrı anlam)</p>
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Marlin — XY / Z</p>
                 <p className="text-[9px] leading-snug text-muted-foreground mb-1">
-                  <strong className="font-medium text-foreground">Makine mm:</strong> G28 sonrası nozzle buraya G0 ile gider, ardından G92 X0 Y0.
-                  <strong className="font-medium text-foreground ml-1">DXF mm:</strong> O fiziksel noktanın çizimdeki koordinatı; G-code XY = strip/DXF − bu değer. Çizim orijinini tezgâhta G92 yaptıysanız çoğunlukla 0 / 0.
+                  Üretilen G-code M206 veya sabit 107×107 köşesini orijin saymaz; çizim mm’leri mevcut WCS’e göre çalışır. İşe başlamadan nozzle’u strip/DXF ile hizalayın.
                 </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Num label="G92 öncesi makine X" cfgKey="marlinWorkspaceOriginX" step={0.5} />
-                  <Num label="G92 öncesi makine Y" cfgKey="marlinWorkspaceOriginY" step={0.5} />
-                </div>
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  <Num label="Bu noktada DXF X" cfgKey="marlinDxfAtG92X" step={0.5} />
-                  <Num label="Bu noktada DXF Y" cfgKey="marlinDxfAtG92Y" step={0.5} />
-                </div>
-                <p className="text-[9px] leading-snug text-muted-foreground">
-                  Eski tek alan mantığı: DXF X/Y’yi makine ile aynı tutun (ör. 107.5). M83, XY orijinini sıfırlamaz; E için döndürmede kısa süre M82 kullanılır.
+                <label className="flex items-start gap-2 cursor-pointer text-[10px] leading-snug pb-1 border-b border-border/50">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 rounded border-border"
+                    checked={cfg.releaseMotorsAtProgramEnd}
+                    onChange={e => updatePickPlaceConfig({ releaseMotorsAtProgramEnd: e.target.checked })}
+                  />
+                  <span>
+                    <span className="font-medium text-foreground">Program sonu M84 (motor kes)</span>
+                    <span className="text-muted-foreground"> Varsayılan kapalı; uzun duruşta elle M84 kullanın.</span>
+                  </span>
+                </label>
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide pt-1">Z (iş parçası mm)</p>
+                <p className="text-[9px] leading-snug text-muted-foreground mb-1">
+                  Strip / kumaş yüzeyi Z; taş tipi pick/place offset eklenir.
                 </p>
-                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide pt-1 border-t border-border/50">Z (G92 sonrası iş parçası mm)</p>
                 <div className="grid grid-cols-2 gap-2">
                   <Num label="Strip Z mm" cfgKey="marlinStripZMm" step={0.05} />
                   <Num label="Kumaş Z mm" cfgKey="marlinFabricZMm" step={0.05} />
                 </div>
                 <p className="text-[9px] leading-snug text-muted-foreground">
-                  Taşı ölçüp G92 sonrası strip ve kumaş yüzeyinde nozzle Z’yi (mm) buraya yazın; taş tipindeki pick/place Z offset eklenir.
+                  Taş tipindeki pick/place Z offset bu değerlere eklenir.
                 </p>
               </div>
             )}
@@ -616,141 +720,206 @@ export default function GcodePanel() {
         )}
       </div>
 
-      {/* JOG Modal — geniş, viewer üzerinde tam kullanım */}
+      {/* JOG Modal */}
       {showJog && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 bg-black/60"
+          className="fixed inset-0 z-[100] flex items-center justify-center p-3 bg-black/65 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           aria-labelledby="jog-modal-title"
+          onKeyDown={e => e.key === 'Escape' && setShowJog(false)}
         >
-          <div className="flex h-[min(92vh,880px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl ring-1 ring-black/5 dark:ring-white/10">
-            {/* Üst başlık */}
-            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-muted/30 px-5 py-4 sm:px-6">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-                  <Gamepad2 className="h-5 w-5" />
+          <div className="flex h-[min(90vh,760px)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+
+            {/* Başlık */}
+            <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted/30 px-4 py-2.5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
+                  <Gamepad2 className="h-3.5 w-3.5" />
                 </div>
                 <div>
-                  <h3 id="jog-modal-title" className="text-lg font-semibold tracking-tight sm:text-xl">
-                    JOG &amp; G-code
-                  </h3>
-                  <p className="mt-0.5 max-w-xl text-xs text-muted-foreground sm:text-sm">
-                    Eksen adımları veya alttaki editöre komut yazın. Çok satır göndermek için <strong>Gönder</strong> kullanın.
-                  </p>
+                  <h3 id="jog-modal-title" className="text-sm font-semibold leading-none">JOG &amp; G-code</h3>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">Ctrl+Enter ile gönder · ; ile yorum satırı</p>
                 </div>
               </div>
-              <Button type="button" variant="ghost" size="sm" className="h-9 shrink-0 px-3"
+              <Button type="button" variant="ghost" size="sm" className="h-7 px-2.5 text-xs"
                 onClick={() => setShowJog(false)}>
                 Kapat
               </Button>
             </div>
 
-            {/* İçerik: mobilde üst jog, masaüstünde yan yana + altta COM konsolu */}
-            <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="grid gap-5 p-5 sm:gap-6 sm:p-6 lg:grid-cols-[minmax(280px,400px)_1fr] lg:items-start">
-                {/* Sol: JOG */}
-                <div className="space-y-5 rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-                  <div>
-                    <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Adım (mm)</Label>
-                    <div className="mt-2 grid grid-cols-4 gap-2">
-                      {[0.1, 1, 5, 10].map(step => (
-                        <button
-                          key={step}
-                          type="button"
-                          onClick={() => setJogStep(step)}
-                          className={`rounded-lg border py-3 text-sm font-semibold transition-colors ${jogStep === step ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:border-primary/50 hover:bg-muted/50'}`}
-                        >
-                          {step}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+            {/* İçerik: sol kontroller | sağ editör+konsol */}
+            <div className="min-h-0 flex-1 flex overflow-hidden">
 
-                  <div>
-                    <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">JOG hızı (mm/dk)</Label>
-                    <div className="mt-2 flex gap-2">
-                      <Input
-                        type="number"
-                        min={1}
-                        step={100}
-                        className="h-11 flex-1 font-mono text-sm"
-                        value={cfg.jogFeed}
-                        onChange={e => updatePickPlaceConfig({ jogFeed: Math.max(1, parseFloat(e.target.value) || 1) })}
-                      />
-                    </div>
-                    <div className="mt-2 grid grid-cols-4 gap-2">
-                      {[6000, 12000, 30000, 60000].map(speed => (
-                        <button
-                          key={speed}
-                          type="button"
-                          onClick={() => updatePickPlaceConfig({ jogFeed: speed })}
-                          className={`rounded-lg border py-2 text-xs font-semibold transition-colors ${cfg.jogFeed === speed ? 'border-primary bg-primary/15 text-primary' : 'border-border bg-background hover:border-primary/40'}`}
-                        >
-                          {speed >= 1000 ? `${speed / 1000}k` : speed}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+              {/* Sol: hareket kontrolleri + acil durdurma */}
+              <div className="w-[300px] shrink-0 flex flex-col border-r border-border overflow-hidden bg-card/30">
+                <div className="min-h-0 flex-1 overflow-y-auto p-4 flex flex-col gap-3.5 custom-scrollbar">
 
+                {/* Adım + F — elle girilen değerler */}
+                <div className="space-y-2.5">
                   <div>
-                    <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Z</Label>
-                    <div className="mt-2 flex gap-3">
-                      <Button type="button" variant="outline" className="h-14 flex-1 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('Z', -1)}>Z-</Button>
-                      <Button type="button" variant="outline" className="h-14 flex-1 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('Z', 1)}>Z+</Button>
-                    </div>
+                    <Label htmlFor="jog-mm" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Adım (mm)
+                    </Label>
+                    <Input
+                      id="jog-mm"
+                      type="text"
+                      inputMode="decimal"
+                      className="mt-1 h-9 font-mono text-sm"
+                      value={jogMmText}
+                      onChange={e => setJogMmText(e.target.value)}
+                      placeholder="örn. 1 veya 0,1"
+                      spellCheck={false}
+                    />
                   </div>
-
                   <div>
-                    <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">X / Y</Label>
-                    <div className="mt-2 grid max-w-[280px] grid-cols-3 gap-2 sm:max-w-none">
-                      <div />
-                      <Button type="button" variant="outline" className="h-14 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('Y', 1)}>Y+</Button>
-                      <div />
-                      <Button type="button" variant="outline" className="h-14 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('X', -1)}>X-</Button>
-                      <div className="flex items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 text-sm font-medium text-muted-foreground">
-                        {jogStep} mm
-                      </div>
-                      <Button type="button" variant="outline" className="h-14 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('X', 1)}>X+</Button>
-                      <div />
-                      <Button type="button" variant="outline" className="h-14 text-lg font-mono font-semibold"
-                        onClick={() => handleJogMove('Y', -1)}>Y-</Button>
-                      <div />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <Button type="button" variant="secondary" className="h-11 text-xs sm:text-sm"
-                      onClick={handleJogHome}>Home G28</Button>
-                    <Button type="button" variant="secondary" className="h-11 text-xs sm:text-sm"
-                      onClick={handleJogSafeZ}>Safe Z</Button>
-                    <Button type="button" variant="secondary" className="h-11 text-xs sm:text-sm"
-                      onClick={handleJogZeroXY}>Zero G92</Button>
+                    <Label htmlFor="jog-f" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      F (mm/dk)
+                    </Label>
+                    <Input
+                      id="jog-f"
+                      type="text"
+                      inputMode="numeric"
+                      className="mt-1 h-9 font-mono text-sm"
+                      value={jogFeedText}
+                      onChange={e => setJogFeedText(e.target.value)}
+                      onBlur={() => {
+                        const v = parseJogNumber(jogFeedText);
+                        if (v !== null && v >= 1) {
+                          updatePickPlaceConfig({ jogFeed: Math.round(v) });
+                        }
+                      }}
+                      placeholder="örn. 3000"
+                      spellCheck={false}
+                    />
                   </div>
                 </div>
 
-                {/* Sağ: G-code editörü */}
-                <div className="flex min-h-[min(52vh,480px)] flex-col rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5 lg:min-h-[min(60vh,560px)]">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <Label htmlFor="jog-gcode-editor" className="text-sm font-medium">
+                <div className="h-px bg-border" />
+
+                {/* XY pad + Z yan yana */}
+                <div className="flex items-center gap-2">
+                  {/* XY D-pad */}
+                  <div className="grid grid-cols-3 gap-1.5 flex-1">
+                    <div />
+                    <Button type="button" variant="outline"
+                      className="h-12 text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('Y', 1)}>Y+</Button>
+                    <div />
+                    <Button type="button" variant="outline"
+                      className="h-12 text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('X', -1)}>X−</Button>
+                    <div className="flex items-center justify-center rounded-md border border-dashed border-border bg-muted/30 text-[9px] font-medium text-muted-foreground text-center leading-tight px-0.5">
+                      XY<br/>Δmm
+                    </div>
+                    <Button type="button" variant="outline"
+                      className="h-12 text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('X', 1)}>X+</Button>
+                    <div />
+                    <Button type="button" variant="outline"
+                      className="h-12 text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('Y', -1)}>Y−</Button>
+                    <div />
+                  </div>
+
+                  {/* Z ekseni */}
+                  <div className="flex flex-col gap-1.5">
+                    <Button type="button" variant="outline"
+                      className="h-12 w-[52px] text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('Z', 1)}>Z+</Button>
+                    <div className="flex items-center justify-center text-[9px] font-semibold text-muted-foreground h-4">Z</div>
+                    <Button type="button" variant="outline"
+                      className="h-12 w-[52px] text-sm font-mono font-bold active:scale-95 transition-transform"
+                      onClick={() => handleJogMove('Z', -1)}>Z−</Button>
+                  </div>
+                </div>
+
+                <div className="h-px bg-border" />
+
+                {/* Rotasyon */}
+                <div>
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {cfg.rotationAxis} ekseni — mutlak °
+                  </span>
+                  <div className="mt-1.5 flex gap-1.5">
+                    <Input
+                      id="jog-rotate-deg"
+                      type="text"
+                      inputMode="decimal"
+                      className="h-9 flex-1 font-mono text-sm"
+                      value={jogRotateDeg}
+                      onChange={e => setJogRotateDeg(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); void handleJogGoToRotationAngle(); }
+                      }}
+                      placeholder="örn. 45"
+                      aria-label={`Hedef açı ${cfg.rotationAxis}`}
+                    />
+                    <Button type="button" className="h-9 px-4 font-semibold shrink-0"
+                      onClick={() => void handleJogGoToRotationAngle()}>
+                      Git
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="h-px bg-border" />
+
+                {/* Yardımcı komutlar */}
+                <div className="flex gap-2">
+                  <Button type="button" variant="secondary" className="flex-1 h-9 text-xs font-semibold"
+                    title={`G1 Z${cfg.safeZ} (F=jog) — güvenli yüksekliğe çık`}
+                    onClick={handleJogSafeZ}>
+                    Safe Z
+                  </Button>
+                  <Button type="button" variant="default" className="flex-1 h-9 text-xs font-semibold"
+                    title="G92 Z0 — mevcut Z konumunu sıfır olarak tanımla"
+                    onClick={handleJogZeroZ}>
+                    G92 Z0
+                  </Button>
+                </div>
+
+                </div>
+
+                <div className="shrink-0 border-t border-destructive/30 bg-destructive/[0.08] p-3 dark:bg-destructive/10">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="h-12 w-full gap-2 rounded-lg text-sm font-bold uppercase tracking-wide shadow-md active:scale-[0.98] transition-transform"
+                    onClick={() => void handleJogEmergencyStop()}
+                    title="PC kuyruğunu kes + Marlin M410. M112 yok (kill/M999 gerekmez)."
+                  >
+                    <OctagonAlert className="h-4 w-4 shrink-0" aria-hidden />
+                    Durdur
+                  </Button>
+                  <p className="mt-1.5 text-center text-[9px] leading-snug text-muted-foreground">
+                    {cfg.firmware === 'marlin'
+                      ? 'M410 planı temizler; yazıcı çalışır kalır. Gerçek acil durum: tezgâh E-stop veya konsoldan M112 (sonrası M999).'
+                      : 'Yalnızca host kuyruğu kesilir; tam durdurma için kontrolcü / fiziksel E-stop kullanın.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Sağ: G-code editörü + seri konsol */}
+              <div className="min-h-0 flex-1 flex flex-col">
+
+                {/* G-code editörü */}
+                <div className="flex min-h-0 flex-1 flex-col p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <Label htmlFor="jog-gcode-editor" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       G-code editörü
                     </Label>
-                    <span className="text-xs text-muted-foreground">
-                      Ctrl+Enter = gönder · ; ile başlayan satırlar atlanır
-                    </span>
+                    <button type="button"
+                      className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setJogGcodeText('')}>
+                      <Trash2 className="h-2.5 w-2.5" /> Temizle
+                    </button>
                   </div>
                   <textarea
                     id="jog-gcode-editor"
                     value={jogGcodeText}
                     onChange={e => setJogGcodeText(e.target.value)}
-                    className="min-h-0 flex-1 resize-none rounded-lg border border-input bg-background px-4 py-3 font-mono text-sm leading-relaxed text-foreground shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-base"
-                    placeholder={'Örnek:\nG0 X10 Y20\nG0 Z5\nM106 S255'}
+                    className="min-h-0 flex-1 resize-none rounded-lg border border-input bg-muted/20 px-3 py-2.5 font-mono text-sm leading-relaxed text-foreground shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    placeholder={'G1 X10 Y20 F3000\nG1 Z5 F3000\nM106 S255\n; yorum satırı atlanır'}
                     spellCheck={false}
                     onKeyDown={e => {
                       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -759,47 +928,33 @@ export default function GcodePanel() {
                       }
                     }}
                   />
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button type="button" className="h-11 min-w-[140px] gap-2 px-5" onClick={() => void sendJogBuffer()}>
-                      <Send className="h-4 w-4" />
+                  <div className="mt-2">
+                    <Button type="button" className="h-9 w-full gap-2 font-semibold"
+                      onClick={() => void sendJogBuffer()}>
+                      <Send className="h-3.5 w-3.5" />
                       Gönder
-                    </Button>
-                    <Button type="button" variant="outline" className="h-11 gap-2" onClick={() => setJogGcodeText('')}>
-                      <Trash2 className="h-4 w-4" />
-                      Temizle
                     </Button>
                   </div>
                 </div>
-              </div>
-              </div>
 
-              <div className="shrink-0 border-t border-border bg-muted/20 px-5 py-3 sm:px-6">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Seri konsol (COM)
-                  </Label>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={() => setCncTerminalLines([])}
-                  >
-                    Konsolu temizle
-                  </Button>
+                {/* Seri konsol */}
+                <div className="shrink-0 border-t border-border bg-muted/20 px-4 py-3">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Seri konsol</span>
+                    <button type="button"
+                      className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setCncTerminalLines([])}>
+                      temizle
+                    </button>
+                  </div>
+                  <pre ref={cncTerminalRef}
+                    className="max-h-[160px] min-h-[72px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground custom-scrollbar">
+                    {cncTerminalLines.length === 0
+                      ? <span className="text-muted-foreground">CNC çıktısı burada görünür…</span>
+                      : cncTerminalLines.join('\n')}
+                  </pre>
                 </div>
-                <pre
-                  ref={cncTerminalRef}
-                  className="max-h-[200px] min-h-[120px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-background p-3 font-mono text-[11px] leading-relaxed text-foreground"
-                >
-                  {cncTerminalLines.length === 0 ? (
-                    <span className="text-muted-foreground">
-                      Bağlandıktan sonra CNC'den gelen ve gönderilen satırlar burada görünür.
-                    </span>
-                  ) : (
-                    cncTerminalLines.join('\n')
-                  )}
-                </pre>
+
               </div>
             </div>
           </div>
