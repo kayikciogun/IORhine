@@ -1,0 +1,150 @@
+<?com_websocket(55001)?>
+
+dim shared this_moveDir as location of xyzr
+dim shared this_disableTimeout as long
+
+
+<?lib_prgStart()?>
+	attach delta1
+	attach conv
+	delta1_torque(20)
+	tool_select(tool_typeLaser)
+	tool_grip(true)
+end sub
+
+<?com_prgReceive('this_websocket', 200)?>
+	select case receive_
+	case com_receiveDisconnect
+		allDisable()
+	case com_receiveTimeout
+		if anyEnabled then
+			allStop()
+			if system.clock > this_disableTimeout then
+				allDisable()
+			end if
+		end if
+	case com_receiveMessage
+		handleMessage()
+		this_disableTimeout = system.clock + 20000
+	case com_receiveNotify
+		this_disableTimeout = system.clock + 20000
+	end select
+	
+	com_clear()
+	com_putLocationXyzr("/pos",		here)
+	com_putDouble("/conv",			conv.positionFeedback)
+	com_putLong("/tool",			tool_type)
+	com_putBool("/gripped",			tool_gripped)
+	com_send(this_websocket)
+end sub
+
+
+<?lib_prgStop()?>
+	allDisable()
+	tool_select(tool_typeNone)
+	delta1.velocityoverride = 100
+	conv.velocityoverride   = 100
+	delta1_torque(100)
+end sub
+
+
+<?lib_prgError()?>
+	allStop()
+end sub
+
+
+
+sub handleMessage
+	dim cmd_ as long
+	dim speed_ as double
+	dim dir_ as location of xyzr
+	try
+		cmd_ = com_getLong("/cmd")
+		select case cmd_
+		case is>0
+			dir_ = com_getLocationXyzr("/dir")
+			speed_ = com_getDouble("/speed")
+			delta1.velocityoverride = speed_
+			conv.velocityoverride = 3*speed_
+			if not anyMoving or distl(dir_, this_moveDir)>0 or distr(dir_, this_moveDir)>0 then
+				this_moveDir = dir_
+				allStop()
+				select case cmd_
+				case 1
+					delta1_enable()
+					if com_getBool("/abs") then
+						moves delta1 dir_
+					else
+						movesLimit(dir_)
+					end if
+				case 11
+					conv_enable()
+					jog conv dir_{1} * conv.velocitymax
+				end select
+			end if
+		case 0
+			allStop()
+		case -1
+			tool_select(com_getLong("/tool"))
+		case -2
+			tool_grip(com_getBool("/grip"))
+		end select
+	<?catchLog()?>
+end sub
+
+
+sub movesLimit(byval dir_ as location of xyzr)
+	dim target_ as location of xyzr = delta1.setpoint:inverse(delta1.tool)
+	dim steps_  as long
+	dim orientationfollowing_ as long
+	
+	if dir_{1}<>0 then
+		steps_ = abs(dIfElse(-200, dir_{1}<0, 200) - target_{1})
+	end if
+	if dir_{2}<>0 then
+		steps_ = abs(dIfElse(-200, dir_{2}<0, 200) - target_{2})
+	end if
+	if dir_{3}<>0 then
+		steps_ = abs(dIfElse(   0, dir_{3}<0, 130) - target_{3})
+	end if
+	if dir_{4}<>0 then
+		steps_ = abs(dIfElse(-179, dir_{4}<0, 179) - target_{4})
+		orientationfollowing_ = lIfElse(4, dir_{4}>0, 6)
+	end if
+	
+	target_ = delta1.setpoint + steps_*dir_
+	while not delta1.isMoving and steps_>0
+		try
+			'print target_; " steps:"; steps_
+			moves delta1 target_ orientationfollowing=orientationfollowing_
+		catch 3121
+		catch 3176
+		finally
+			target_ = target_ - dir_
+			decrement(steps_)
+		end try
+	end while 
+end sub
+
+
+function anyMoving as long
+	anyMoving = delta1.isMoving or conv.isMoving
+end function
+
+sub allStop
+	while anyMoving
+		stop delta1 stoptype=ABORT
+		stop conv   stoptype=ABORT
+		sleep 1
+	end while
+end sub
+
+sub allDisable
+	allStop()
+	delta1_disable()
+	conv_disable()
+end sub
+
+function anyEnabled as long
+	anyEnabled = not (delta1_disabled and conv_disabled)
+end function

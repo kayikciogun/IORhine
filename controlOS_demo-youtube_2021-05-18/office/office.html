@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block html %}
+<navBar>
+	<div class="navbar-nav">
+		<pageLink params="path:'extlog'"></pageLink>
+	</div>
+</navBar>
+<main class="container-fluid">
+	{% module page("extlog.html") %}
+</main>
+{% end %}

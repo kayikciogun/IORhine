@@ -12,5 +12,19 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - NEXT_PUBLIC_RUNTIME_URL=http://localhost:8000
+    depends_on:
+      - runtime
     restart: unless-stopped
 
+  runtime:
+    build:
+      context: ./io-cam-runtime
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - IO_CAM_CORS_ORIGINS=http://localhost:9002,http://127.0.0.1:9002
+    volumes:
+      - ./io-cam-runtime/calibration:/app/calibration
+    restart: unless-stopped

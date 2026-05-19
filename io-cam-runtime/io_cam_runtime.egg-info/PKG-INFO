@@ -1,0 +1,40 @@
+Metadata-Version: 2.4
+Name: io-cam-runtime
+Version: 0.1.0
+Summary: IO-CAM pick & place Python runtime (vision + motion + conveyor)
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: pyserial>=3.5
+Requires-Dist: opencv-python-headless>=4.10.0
+Requires-Dist: numpy>=2.0.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: python-multipart>=0.0.12
+Requires-Dist: websockets>=13.0
+Requires-Dist: ezdxf>=1.3.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: httpx>=0.27.0; extra == "dev"
+
+# IO-CAM Runtime
+
+Python FastAPI backend for vision-guided pick & place. See [IO-CAM-ARCHITECTURE.md](../IO-CAM-ARCHITECTURE.md).
+
+## Local dev
+
+```bash
+cd io-cam-runtime
+pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+```
+
+Set `IO_CAM_MOCK_HARDWARE=1` to run without serial/camera.
+
+## Tests
+
+```bash
+pytest
+```

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+
+{% block head %}
+	<script src="{{static_url('bootstrap-select.js')}}"></script>
+	<link rel="stylesheet" href="{{static_url('bootstrap-select.css')}}">
+	<script src="{{static_url('chart.js')}}"></script>
+{% end %}
+
+
+{% block body %}
+<navBar>
+	<div class="navbar-nav">
+		{% include "app/menu.html" %}
+	</div>
+	<div class="navbar-nav ml-auto">
+		<navLocale></navLocale>
+		<navPoweroff></navPoweroff>
+	</div>
+</navBar>
+<main class="container-fluid">
+	<breadcrumb></breadcrumb>
+	
+	{% module page("homepage.html", start=True) %}
+	
+	{% module page("app/app.html") %}
+</main>
+{% end %}
+
+
+{% block script %}
+	{% include "gui.js" %}
+{% end %}
+
+
+{% block html %}
+	{% include "guiWidgets.html" %}
+{% end %}

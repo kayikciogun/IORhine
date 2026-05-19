@@ -1,0 +1,13 @@
+{
+  "safe_z": 5.0,
+  "pick_z": 0.5,
+  "glue_z": 0.5,
+  "place_z": 0.5,
+  "xy_feed": 3000,
+  "z_feed": 600,
+  "rotation_axis": "A",
+  "rotation_feed": 3600,
+  "vacuum_on_dwell_s": 0.15,
+  "vacuum_off_dwell_s": 0.15,
+  "glue_dwell_s": 0.5
+}

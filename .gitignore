@@ -28,6 +28,7 @@ Thumbs.db
 
 # Logs
 *.log
+.logs/
 
 # Runtime data
 pids
@@ -81,6 +82,12 @@ temp/
 
 # TypeScript
 *.tsbuildinfo
+
+# Python runtime venv
+io-cam-runtime/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # IDX
 .idx/

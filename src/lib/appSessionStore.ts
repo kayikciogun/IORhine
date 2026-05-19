@@ -6,6 +6,8 @@
  */
 
 import type { PickPlaceConfig, StoneType } from '@/types/pickplace';
+import type { PlacementCsvRow } from '@/types/runtime';
+import { rowsToCsv } from '@/lib/placementCsv';
 
 /** DxfContext.ModelTransform ile aynı şekil (döngüsel import önlemek için burada) */
 export type PersistedModelTransform = {
@@ -18,6 +20,7 @@ export const APP_SESSION_VERSION = 1 as const;
 
 const LS_PICKPLACE = 'rhinecnc:v1:pickplace';
 const LS_DXF_META = 'rhinecnc:v1:dxfMeta';
+const LS_PLACEMENT = 'rhinecnc:v1:placement';
 
 const IDB_NAME = 'rhinecnc-session';
 const IDB_VERSION = 1;
@@ -40,6 +43,15 @@ export type DxfBlobRecord = {
 
 export type DxfMetaRecord = {
   modelTransform: PersistedModelTransform | null;
+};
+
+/** Planlama → Production: DXF viewer kapalıyken CSV tablosu için */
+export type PlacementSnapshot = {
+  v: typeof APP_SESSION_VERSION;
+  rows: PlacementCsvRow[];
+  csv: string;
+  fileName?: string;
+  savedAt: number;
 };
 
 function openIdb(): Promise<IDBDatabase> {
@@ -148,12 +160,58 @@ export async function clearDxfBlob(): Promise<void> {
   }
 }
 
+export function loadPlacementSnapshot(): PlacementSnapshot | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LS_PLACEMENT);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as Partial<PlacementSnapshot>;
+    if (data.v !== APP_SESSION_VERSION || !Array.isArray(data.rows) || !data.rows.length) {
+      return null;
+    }
+    return data as PlacementSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+export function savePlacementSnapshot(input: {
+  rows: PlacementCsvRow[];
+  csv?: string;
+  fileName?: string;
+}): void {
+  if (typeof window === 'undefined' || !input.rows.length) return;
+  try {
+    const payload: PlacementSnapshot = {
+      v: APP_SESSION_VERSION,
+      rows: input.rows,
+      csv: input.csv ?? rowsToCsv(input.rows),
+      fileName: input.fileName,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(LS_PLACEMENT, JSON.stringify(payload));
+    window.dispatchEvent(new CustomEvent('rhine:placement-updated'));
+  } catch (e) {
+    console.warn('[appSessionStore] placement save failed', e);
+  }
+}
+
+export function clearPlacementSnapshot(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(LS_PLACEMENT);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Pick & Place + DXF meta + IndexedDB DXF — tam temizlik */
 export function clearAppSession(): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(LS_PICKPLACE);
     localStorage.removeItem(LS_DXF_META);
+    localStorage.removeItem(LS_PLACEMENT);
   } catch {
     /* ignore */
   }

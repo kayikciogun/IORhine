@@ -22,34 +22,13 @@ interface PickPlaceContextType {
 }
 
 const defaultPickPlaceConfig: PickPlaceConfig = {
-  // İlk hücre merkezi ≈ 50,50 (cellSize/2 = 10 → origin 40,40)
   stripOriginX: -100.0,
   stripOriginY: -100.0,
-  cellSize: 10,
-  rowLength: 2,
+  cellSize: 20,
+  rowLength: 100,
   cellGap: 0,
-  contourOffset: 0.5,
-  defaultStonePickZMm: 5,
-  defaultStonePlaceZMm: 5,
-  safeZ: 10,
-  rapidFeed: 10000,
-  jogFeed: 3000,
-  pickFeed: 3000,
-  placeFeed: 2000,
-  rotationAxis: 'E',
-  rotationFeed: 5000,
-  stripAngle: 0,
-  vacuumOnDwell: 1,
-  vacuumOffDwell: 0.5,
-  vacuumOnCode: 'M106 S255',
-  vacuumOffCode: 'M107',
-  firmware: 'marlin',
-  marlinStripZMm: 0,
-  marlinFabricZMm: 0,
-  releaseMotorsAtProgramEnd: false,
 };
 
-/** localStorage / birleştirme sonrası bozuk tipleri düzeltir (Input + fmt için güvenli sayılar). */
 function toFiniteNumber(v: unknown, fallback: number): number {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string' && v.trim() !== '') {
@@ -68,14 +47,8 @@ function sanitizePickPlaceConfig(input: PickPlaceConfig): PickPlaceConfig {
     const cur = o[key];
     if (typeof defVal === 'number') {
       oMut[key as string] = toFiniteNumber(cur, defVal);
-    } else if (typeof defVal === 'string') {
-      oMut[key as string] = typeof cur === 'string' ? cur : defVal;
-    } else if (typeof defVal === 'boolean') {
-      oMut[key as string] = typeof cur === 'boolean' ? cur : defVal;
     }
   });
-  if (o.rotationAxis !== 'E' && o.rotationAxis !== 'A') o.rotationAxis = d.rotationAxis;
-  if (o.firmware !== 'marlin' && o.firmware !== 'standard') o.firmware = d.firmware;
   return o;
 }
 
@@ -85,8 +58,6 @@ function sanitizeStoneType(st: StoneType): StoneType {
     id: typeof st.id === 'string' ? st.id : `stone_${Date.now()}`,
     name: typeof st.name === 'string' ? st.name : 'Taş',
     color: typeof st.color === 'string' ? st.color : '#888888',
-    pickZOffset: toFiniteNumber(st.pickZOffset, 0),
-    placeZOffset: toFiniteNumber(st.placeZOffset, 0),
     contourIds: Array.isArray(st.contourIds)
       ? st.contourIds.filter((id): id is string => typeof id === 'string')
       : [],
@@ -96,7 +67,6 @@ function sanitizeStoneType(st: StoneType): StoneType {
 const PickPlaceContext = createContext<PickPlaceContextType | undefined>(undefined);
 
 export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  /** SSR ve ilk client çizimi aynı olmalı; localStorage sadece mount sonrası okunur (hydration hatası önlenir). */
   const [stoneTypes, setStoneTypes] = useState<StoneType[]>([]);
   const [activeStoneTypeId, setActiveStoneTypeId] = useState<string | null>(null);
   const [pickPlaceConfig, setPickPlaceConfig] = useState<PickPlaceConfig>(defaultPickPlaceConfig);
@@ -125,8 +95,6 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
     }, 450);
     return () => window.clearTimeout(t);
   }, [stoneTypes, pickPlaceConfig, activeStoneTypeId]);
-
-  // ─── Stabil callback'ler (useCallback + functional update → dep'siz) ──────
 
   const addStoneType = useCallback((stoneType: StoneType) => {
     setStoneTypes(prev => [...prev, stoneType]);
@@ -171,7 +139,6 @@ export const PickPlaceProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
   }, []);
 
-  // ─── Context değeri — sadece gerçek state değişince yeniden üretilir ──────
   const value = useMemo<PickPlaceContextType>(() => ({
     stoneTypes,
     activeStoneTypeId,

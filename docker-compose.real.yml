@@ -1,0 +1,13 @@
+# Gerçek donanım override — kullanım:
+#   docker compose -f docker-compose.yml -f docker-compose.real.yml up
+#
+# Linux'ta seri port ve kamera için cihaz yollarını ortamınıza göre düzenleyin.
+
+services:
+  runtime:
+    environment:
+      - IO_CAM_MOCK_HARDWARE=0
+      - IO_CAM_SERIAL_PORT=/dev/ttyUSB0
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/video0:/dev/video0

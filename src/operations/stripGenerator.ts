@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { StoneType, PickPlaceConfig } from '@/types/pickplace';
 import { DxfWriter } from '@/Utils/dxfWriter';
-import { createCavalierOffsets, Path, ArcSegment, LineSegment, pathToCavalierPolyline, convertVertexesToPath } from '@/Utils/offsetUtils';
+import { Path, pathToCavalierPolyline, convertVertexesToPath } from '@/Utils/offsetUtils';
+import { calcAngleFromSceneObject } from '@/Utils/contourAngle';
 
 export interface StripCell {
   x: number;
@@ -10,6 +11,26 @@ export interface StripCell {
   color: string;
   originalHandle: string;
   path: Path;
+  polylinePoints?: { x: number; y: number }[];
+  /** Hedef yerleştirme açısı (°) — glue hücresi ve robot C ekseni için. */
+  targetAngle: number;
+  /** false → açık kontur (ARC gibi), SVG'de Z ile kapatılmaz. */
+  isClosed: boolean;
+}
+
+function extractLineGeometryPoints(obj: any): [number, number, number][] {
+  const startAttr = obj?.geometry?.attributes?.instanceStart;
+  const endAttr = obj?.geometry?.attributes?.instanceEnd;
+  if (!startAttr || !endAttr || typeof startAttr.count !== 'number') return [];
+
+  const pts: [number, number, number][] = [];
+  for (let i = 0; i < startAttr.count; i++) {
+    if (i === 0) {
+      pts.push([startAttr.getX(i), startAttr.getY(i), startAttr.getZ?.(i) ?? 0]);
+    }
+    pts.push([endAttr.getX(i), endAttr.getY(i), endAttr.getZ?.(i) ?? 0]);
+  }
+  return pts;
 }
 
 export function generateStripData(
@@ -30,81 +51,93 @@ export function generateStripData(
   for (const st of stoneTypes) {
     for (const handle of st.contourIds) {
       const targetObj = handleIndex.get(handle) ?? null;
-
       if (!targetObj) continue;
 
-      // Objenin noktalarını çıkar
       const vertexes: [number, number, number][] = [];
       let isClosed = true;
-      
+
       const tObj: any = targetObj;
       const type = tObj.userData?.type;
       const data = tObj.userData?.data;
-      
+
       if (!type || !data) continue;
 
       if (type === 'LINE') {
-         if (data.startPoint && data.endPoint) {
-             vertexes.push([data.startPoint.x, data.startPoint.y, 0]);
-             vertexes.push([data.endPoint.x, data.endPoint.y, 0]);
-             isClosed = false;
-         }
+        const lineGeometryPoints = extractLineGeometryPoints(tObj);
+        // LWPOLYLINE içindeki bulge'lı yaylar dxfSceneBuilder'da type=LINE,
+        // data.isBulge=true olarak gelir; gerçek eğri noktaları Line2 geometry'dedir.
+        if ((data.isBulge || lineGeometryPoints.length > 2) && lineGeometryPoints.length > 1) {
+          vertexes.push(...lineGeometryPoints);
+          isClosed = false;
+        } else if (data.startPoint && data.endPoint) {
+          vertexes.push([data.startPoint.x, data.startPoint.y, 0]);
+          vertexes.push([data.endPoint.x, data.endPoint.y, 0]);
+          isClosed = false;
+        }
       } else if (type === 'LWPOLYLINE' || type === 'POLYLINE') {
-         isClosed = !!data.shape || !!data.closed || data.isClosed;
-         if (data.vertices) {
-             data.vertices.forEach((v: any) => {
-                 vertexes.push([v.x || 0, v.y || 0, v.bulge || 0]);
-             });
-         }
+        isClosed = !!data.shape || !!data.closed || data.isClosed;
+        if (data.vertices) {
+          data.vertices.forEach((v: any) => {
+            vertexes.push([v.x || 0, v.y || 0, v.bulge || 0]);
+          });
+        }
       } else if (type === 'CIRCLE') {
-         if (data.center) {
-             const c = data.center;
-             const r = data.radius || 1;
-             // İki yarım çember olarak çiz (bulge = 1 -> yarıçap kadar kavis)
-             vertexes.push([c.x - r, c.y, 1]);
-             vertexes.push([c.x + r, c.y, 1]);
-             isClosed = true;
-         }
+        if (data.center) {
+          const c = data.center;
+          const r = data.radius || 1;
+          vertexes.push([c.x - r, c.y, 1]);
+          vertexes.push([c.x + r, c.y, 1]);
+          isClosed = true;
+        }
       } else if (type === 'ARC') {
-         if (data.center) {
-             const c = data.center;
-             const r = data.radius || 1;
-             const startAngle = data.startAngle || 0;
-             const endAngle = data.endAngle || 0;
-             let angleDiff = endAngle - startAngle;
-             
-             if (angleDiff < 0) angleDiff += Math.PI * 2;
-             
-             // Çok büyük açıysa tek bulge ile çizilemeyebilir, 2'ye bölelim
-             const p1 = [c.x + Math.cos(startAngle)*r, c.y + Math.sin(startAngle)*r, 0];
-             const p3 = [c.x + Math.cos(endAngle)*r, c.y + Math.sin(endAngle)*r, 0];
-             
-             if (angleDiff > Math.PI) {
-                 const midAngle = startAngle + angleDiff / 2;
-                 const p2 = [c.x + Math.cos(midAngle)*r, c.y + Math.sin(midAngle)*r, 0];
-                 const bulge = Math.tan(angleDiff / 8); 
-                 vertexes.push([p1[0], p1[1], bulge]);
-                 vertexes.push([p2[0], p2[1], bulge]);
-                 vertexes.push([p3[0], p3[1], 0]);
-             } else {
-                 const bulge = Math.tan(angleDiff / 4);
-                 vertexes.push([p1[0], p1[1], bulge]);
-                 vertexes.push([p3[0], p3[1], 0]); 
-             }
-             isClosed = false;
-         }
+        // Sahne ARC objesi dxfSceneBuilder'da örneklenmiş Line2 olarak çiziliyor.
+        // Aynı noktaları kullan; arc'ı bulge/path dönüşümüne sokma.
+        if (data.points && data.points.length > 0) {
+          data.points.forEach((p: any) => {
+            vertexes.push([p.x, p.y, 0]);
+          });
+        } else {
+          vertexes.push(...extractLineGeometryPoints(tObj));
+        }
+
+        if (vertexes.length < 3 && data.center) {
+          vertexes.length = 0;
+          // Fallback: center+radius+angles (radian) ile örnekle
+          const c = data.center;
+          const r = data.radius || 1;
+          const startAngle = data.startAngle ?? 0;
+          const endAngle   = data.endAngle   ?? 0;
+          let sweep = data.sweepAngleRad ?? (endAngle - startAngle);
+          if (sweep <= 0) sweep += Math.PI * 2;
+          const segments = Math.max(16, Math.ceil(Math.abs(sweep) / (Math.PI / 36)));
+          for (let k = 0; k <= segments; k++) {
+            const ang = startAngle + (k / segments) * sweep;
+            vertexes.push([c.x + Math.cos(ang) * r, c.y + Math.sin(ang) * r, 0]);
+          }
+        }
+
+        isClosed = false;
       } else if (tObj.isMesh || tObj.isLine || tObj.isLine2) {
-         // Fallback to geometry if it's not a generic DXF object
-         const geo = tObj.geometry;
-         if (geo && geo.isBufferGeometry && !geo.isLineGeometry) {
-           const pos = geo.attributes.position;
-           for (let i = 0; i < pos.count; i++) {
+        const linePoints = extractLineGeometryPoints(tObj);
+        if (linePoints.length > 0) {
+          vertexes.push(...linePoints);
+          isClosed = false;
+        } else if (data.center) {
+          // no-op: handled by typed branches above
+        } else {
+          const geo = tObj.geometry;
+          if (geo && geo.isBufferGeometry && !geo.isLineGeometry) {
+            const pos = geo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
               vertexes.push([pos.getX(i), pos.getY(i), 0]);
-           }
-         }
+            }
+          }
+        }
       }
 
-      // Merkezileştirme: shape'in lokal merkezini orijine taşı
+      if (vertexes.length < 2) continue;
+
+      // Merkezileştir
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       vertexes.forEach(v => {
         if (v[0] < minX) minX = v[0];
@@ -114,34 +147,24 @@ export function generateStripData(
       });
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      
+
       const localVertexes = vertexes.map(v => [v[0] - cx, v[1] - cy, v[2]] as [number, number, number]);
+      const polylinePoints = !isClosed
+        ? localVertexes.map(([x, y]) => ({ x, y }))
+        : undefined;
 
-      // Path nesnesine dönüştür
       let finalPath: Path = [];
-      if (localVertexes.length > 1) {
-          finalPath = convertVertexesToPath(localVertexes, isClosed);
-      }
-      
-      // Offset (CavalierContours)
-      if (finalPath.length > 0 && config.contourOffset > 0.001) {
-        try {
-          // contourOffset geçme payıdır.
-          const offsetResult = createCavalierOffsets(finalPath, config.contourOffset, isClosed);
-          if (offsetResult && offsetResult.length > 0 && offsetResult[0].length > 0) {
-            finalPath = offsetResult[0];
-          }
-        } catch (e) {
-          console.warn('[stripGenerator] Offset failed for handle', handle, e);
-        }
+      if (localVertexes.length > 1 && !polylinePoints) {
+        finalPath = convertVertexesToPath(localVertexes, isClosed);
       }
 
-      // Grid — buildPlacementOrders ile aynı pitch: cellSize + cellGap
-      const pitch = config.cellSize + (config.cellGap ?? 0);
+      const pitch = config.cellSize;
       const col = currentIndex % config.rowLength;
       const row = Math.floor(currentIndex / config.rowLength);
       const cellX = config.stripOriginX + col * pitch + config.cellSize / 2;
       const cellY = config.stripOriginY + row * pitch + config.cellSize / 2;
+
+      const targetAngle = calcAngleFromSceneObject(targetObj);
 
       cells.push({
         x: cellX,
@@ -149,7 +172,10 @@ export function generateStripData(
         stoneTypeId: st.id,
         color: st.color,
         originalHandle: handle,
-        path: finalPath
+        path: finalPath,
+        polylinePoints,
+        targetAngle,
+        isClosed,
       });
 
       currentIndex++;
@@ -159,39 +185,36 @@ export function generateStripData(
   return cells;
 }
 
+/**
+ * Yapışkan levha şablonunu lazer kesimine hazır DXF olarak dışa aktar.
+ *
+ * Sadece taş kontürleri export edilir (grid kareleri yok).
+ */
 export function exportStripToDxf(cells: StripCell[], config: PickPlaceConfig): string {
   const writer = new DxfWriter();
-  
-  // Outer frame for the whole strip (opsiyonel)
-  // writer.addRectangle(...)
-  
-  cells.forEach((cell, i) => {
-    // Kutu ekle
-    const hs = config.cellSize / 2;
-    writer.addPolyline([
-      {x: cell.x - hs, y: cell.y - hs},
-      {x: cell.x + hs, y: cell.y - hs},
-      {x: cell.x + hs, y: cell.y + hs},
-      {x: cell.x - hs, y: cell.y + hs}
-    ], true);
-    
-    // Taş kontürünü ekle (offset'li, gerçek kavislerle)
-    if (cell.path && cell.path.length > 0) {
-      // Path'i vertexlere çevir ki bulge (42) kodunu da dışarı aktarabilelim
-      const cavData = pathToCavalierPolyline(cell.path, true); // true = kapalı polyline varsayımı
+
+  cells.forEach((cell) => {
+    // Taş kontürü
+    if (cell.polylinePoints && cell.polylinePoints.length > 1) {
+      const pts = cell.polylinePoints.map((p) => ({
+        x: cell.x + p.x,
+        y: cell.y + p.y,
+        bulge: 0,
+      }));
+      writer.addPolyline(pts, cell.isClosed, 'CONTOUR');
+    } else if (cell.path && cell.path.length > 0) {
+      const cavData = pathToCavalierPolyline(cell.path, true);
       if (cavData && cavData.vertexes) {
-         const pts = cavData.vertexes.map((v: number[]) => ({
-            x: cell.x + v[0],
-            y: cell.y + v[1],
-            bulge: v[2] || 0
-         }));
-         writer.addPolyline(pts, true);
+        const pts = cavData.vertexes.map((v: number[]) => ({
+          x: cell.x + v[0],
+          y: cell.y + v[1],
+          bulge: v[2] || 0
+        }));
+        writer.addPolyline(pts, true, 'CONTOUR');
       }
     }
-    
-    // Numara veya handle yazısı
-    writer.addText(`${i+1}`, cell.x - (hs*0.8), cell.y - (hs*0.8), 2.5);
+
   });
-  
+
   return writer.generate();
 }

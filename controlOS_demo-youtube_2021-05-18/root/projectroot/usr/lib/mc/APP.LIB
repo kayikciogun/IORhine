@@ -1,0 +1,52 @@
+<?engage(['arduino','data','camera'])?>
+
+<?com_websocket(55100)?>
+
+<?$modes = ['teach','prog','paint','sorter','duplo','o3d','shaker','innocise', 'convtest']?>
+
+common shared app_mode as long
+
+
+
+<?lib_prgStart()?>
+	delta1_homing()
+end sub
+
+
+<?lib_prgLoop()?>
+	select case app_mode
+	<?foreach($modes as $mode=>$modeLib) {?>
+		case <?=$mode?>'
+			<?=$modeLib?>_start()
+			while (app_mode=<?=$mode?>) and app_active
+				if <?=$modeLib?>_active then
+					modeControl()
+				else
+					app_mode = 0
+				end if
+			end while
+			<?=$modeLib?>_stop()
+	<?}?>
+	case else
+		app_mode = 0
+	end select
+end sub
+
+
+
+sub modeControl
+	com_clear()
+	com_putLong("/mode",	app_mode)
+	com_send(this_websocket)
+	
+	select case com_receive(this_websocket, 250)
+	case com_receiveMessage
+		app_mode = com_getLong("/mode")
+	end select
+end sub
+
+
+
+<?lib_debug()?>
+	com_putLong("mode",			app_mode)
+end sub

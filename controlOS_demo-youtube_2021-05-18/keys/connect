@@ -1,0 +1,28 @@
+#!/bin/sh
+
+HOST=${1-sys}
+
+SSHFSMNT=/tmp/sys-fs
+
+
+SCRIPT=$(realpath $0)
+BASEDIR=$(dirname $SCRIPT)
+
+cd $BASEDIR
+
+
+
+mkdir -p $SSHFSMNT
+
+
+sshfs \
+	-o IdentityFile=$BASEDIR/ssh/id_rsa \
+	root@$HOST:/ \
+	$SSHFSMNT
+
+ssh \
+	-i ssh/id_rsa \
+	root@$HOST
+
+
+fusermount3 -u $SSHFSMNT

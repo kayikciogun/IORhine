@@ -1,0 +1,12 @@
+[Match]
+Name=sys
+
+[Network]
+DHCPServer=yes
+IPForward=yes
+IPMasquerade=yes
+
+[DHCPServer]
+PoolOffset=200
+PoolSize=50
+EmitRouter=no

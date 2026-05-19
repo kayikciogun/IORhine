@@ -1,0 +1,86 @@
+<?axis([
+	'device'		=> 'stepim',
+	'bus'			=> 'can',
+])?>
+
+
+
+<?drive_update(18)?>
+	<?=lib()?>_deviceWrite(0x607C, 0, 32, 0)					'Home Offset
+	<?=lib()?>_deviceWrite(0x2F22, 0, 16, 1000)					'Home On Edge Current Saturation [mA]
+	
+	<?=lib()?>_driveTune(18000, 100000, 0, 0, 350, 100, 8000, 200)
+	
+	<?=lib()?>_deviceWrite(0x20E0, 1, 16, 1)					'Digital Input Mode
+	
+	<?=lib()?>_deviceWrite(0x209C, 1, 16, 13)					'Digital Output Functionality
+	<?=lib()?>_deviceWrite(0x209C, 2, 16, 13)
+	<?=lib()?>_deviceWrite(0x209B, 1, 16, 0)					'Digital Outputs Polarity
+	<?=lib()?>_deviceWrite(0x209B, 2, 16, 0)
+end sub
+
+
+<?drive_setup()?>
+	positionfactor				= positionfactor / 70
+	direction					= 1
+	torquemax					= <?=driveCache(lib().'_deviceRead(0x6075, 0)')?>		'Motor Rated Current [mA]
+	<?=lib()?>_deviceWrite(0x6098, 0,  8, <?=conf(lib(),'homing','method', -1)?>)
+	displacement = <?=conf(lib(),'homing','offset', -240)?>'
+end sub
+
+
+<?axis_setup()?>
+	absolute					= true
+	absEnable					= <?=device_simulated()?'true':'false'?>		'disable abs motions until homed
+	
+	positionmin					= 242
+	positionmax					= positionmin + 146
+	positionminenable			= true
+	positionmaxenable			= true
+	
+	axistype					= 0
+	
+	<?axis_setupSpeed(800, 70, 20)?>
+	
+	positionerrormax			= 4
+end sub
+
+
+
+
+
+public function <?=lib()?>_homingLoop as long
+	if not absEnable then
+		if not enable then
+			attach
+			followingMode = 2
+			<?=lib()?>_deviceWrite(0x6060, 0, 8, 6)
+			<?=lib()?>_enable()
+		else
+			if getBit(driveStatus, 10) then
+				absEnable = getBit(driveStatus, 12)
+				<?=lib()?>_disableDetach()
+				sleep 100
+				<?=lib()?>_deviceWrite(0x6060, 0, 8, 8)
+			end if
+		end if
+	end if
+	<?=lib()?>_homingLoop = absEnable
+end function
+
+
+<?output('torque', 'double', lib())?>
+	value_ = bound(value_, 5, 100)
+	<?=lib()?>_deviceWrite(0x6073, 0, 16, torquemax*value_/100)
+end sub
+
+
+public function <?=lib()?>_rpm as double
+	<?=lib()?>_rpm = (velocitycommand * positionfactor/4096) * 60
+end function
+
+
+<?lib_debug()?>
+	com_putBool("absEnable",			absEnable)
+	com_putLong("followingMode",		followingMode)
+end sub

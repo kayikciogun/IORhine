@@ -4,13 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "node node_modules/next/dist/bin/next dev --turbopack -p 9002",
+    "start:all": "bash scripts/start.sh",
+    "start:all:mock": "bash scripts/start.sh --mock",
+    "install:all": "bash scripts/start.sh --install",
     "build": "node node_modules/next/dist/bin/next build",
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "node node_modules/next/dist/bin/next lint",
     "typecheck": "tsc --noEmit",
     "debug:enable": "DEBUG=true npm run dev",
-    "debug:disable": "DEBUG=false npm run dev",
-    "gcode-server:install": "pip install -r src/Utils/Code_Sender/requirements.txt"
+    "debug:disable": "DEBUG=false npm run dev"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

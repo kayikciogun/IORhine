@@ -187,6 +187,12 @@ export function extractPointsFromEntityData(
       const a = (2 * Math.PI * i) / sampleCount;
       pts.push({ x: c.x + Math.cos(a) * rx, y: c.y + Math.sin(a) * ry });
     }
+
+  } else if (type === 'SPLINE' && data.points?.length) {
+    data.points.forEach((p: { x: number; y: number }) => pts.push({ x: p.x, y: p.y }));
+
+  } else if (data.points?.length) {
+    data.points.forEach((p: { x: number; y: number }) => pts.push({ x: p.x, y: p.y }));
   }
 
   return pts;
