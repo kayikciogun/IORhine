@@ -1,4 +1,4 @@
 {
-  "kind": "usb",
-  "source_id": "0"
+  "kind": "mock",
+  "source_id": "mock"
 }

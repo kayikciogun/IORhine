@@ -139,6 +139,7 @@ async def ws_camera(websocket: WebSocket):
                     blur_kernel=vis.blur_kernel,
                     show_mask=vis.show_mask,
                     draw=True,
+                    use_pca_angle=True,
                 )
 
             try:

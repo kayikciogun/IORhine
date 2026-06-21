@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from app.config.runtime_store import get_vision
+from app.vision.pca_angle import contour_angle_deg
 
 # web_angle.py / webcam_angle_test.py renkleri (BGR)
 COL_BOX = (0, 220, 120)
@@ -49,10 +50,15 @@ def process_frame(
     blur_kernel: int = 9,
     invert_threshold: bool = False,
     draw: bool = True,
+    use_pca_angle: bool = False,
+    is_symmetric: bool = True,
 ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
     """
     web_angle.process — gri, blur, eşik, kontur, minAreaRect çizimi.
     Döner: (objects, annotated_bgr, binary_mask).
+
+    use_pca_angle=True: PCA açı kullan (detect_all ile tutarlı, [0,360) asimetrik).
+    use_pca_angle=False: minAreaRect açı (eski davranış, [0,180)).
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     k = blur_kernel | 1
@@ -75,7 +81,13 @@ def process_frame(
             continue
 
         rect = cv2.minAreaRect(c)
-        angle = normalize_angle(rect)
+        if use_pca_angle:
+            # PCA açı — detect_all (job runner) ile tutarlı.
+            # Template yoksa is_symmetric=True varsayılan → [0,180).
+            angle = contour_angle_deg(c.astype(np.float32), is_symmetric)
+        else:
+            # minAreaRect açı — eski davranış, [0,180).
+            angle = normalize_angle(rect)
         cx, cy = int(rect[0][0]), int(rect[0][1])
         rw, rh = rect[1]
 
@@ -126,6 +138,8 @@ def fast_detect(
     blur_kernel: int | None = None,
     show_mask: bool | None = None,
     draw: bool = True,
+    use_pca_angle: bool = False,
+    is_symmetric: bool = True,
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
     vis = get_vision()
     thr = thresh_val if thresh_val is not None else vis.fast_detect_threshold
@@ -141,6 +155,8 @@ def fast_detect(
         max_area=max_a,
         blur_kernel=bk,
         draw=draw,
+        use_pca_angle=use_pca_angle,
+        is_symmetric=is_symmetric,
     )
 
     display = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR) if mask_mode else annotated

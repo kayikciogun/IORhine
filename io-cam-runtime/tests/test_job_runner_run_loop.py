@@ -74,11 +74,13 @@ def _make_runner(
     tmpl = template or _StubTemplate()
     bus = EventBus()
     ctx = RuntimeContext()
-    # load_fabric_offset için gerçek dosya gerekiyor
+    # load_fabric_offset ve load_homography için gerçek dosya gerekiyor
     if cal_dir is None:
         cal_dir = _tmp_cal_dir()
     import json as _json
     (cal_dir / "fabric_offset.json").write_text(_json.dumps({"dx": 0.0, "dy": 0.0}))
+    # homography.npy — 3x3 identity (pixel→robot 1:1)
+    np.save(cal_dir / "homography.npy", np.eye(3, dtype=np.float64))
     return JobRunner(
         ctx=ctx,
         bus=bus,

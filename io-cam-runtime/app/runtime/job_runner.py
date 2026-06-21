@@ -9,7 +9,7 @@ from app.glue_sheet.controller import GlueSheetExhausted
 from app.motion.kinematics import FabricOffset, fabric_to_robot
 from app.runtime.csv_loader import PlacementRow
 from app.runtime.state import JobPhase
-from app.vision.calibration import load_fabric_offset
+from app.vision.calibration import load_fabric_offset, load_homography
 from app.vision.detector import Stone, detect_all
 
 if TYPE_CHECKING:
@@ -117,8 +117,44 @@ class JobRunner:
             pass
 
     async def _run_loop(self) -> None:
+        # ── Kalibrasyon kontrolü — homography yoksa pick yanlış yere gider ──
+        homography = load_homography(self.cal_dir)
+        if homography is None:
+            self.ctx.state.phase = JobPhase.ERROR
+            self.ctx.state.message = (
+                "homography.npy yok — kalibrasyon yapın (CalibrationPanel > Homography)"
+            )
+            await self.bus.emit(
+                "error",
+                {
+                    "code": "calibration_missing",
+                    "msg": self.ctx.state.message,
+                },
+            )
+            return
+
+        # ── Vacuum sensör uyarısı — pin yoksa pick başarısı doğrulanamaz ──
+        if settings.vacuum_sensor_pin is None:
+            await self.bus.emit(
+                "error",
+                {
+                    "code": "vacuum_sensor_missing",
+                    "msg": "vacuum_sensor_pin ayarlı değil — pick başarısı doğrulanamıyor (her zaman True)",
+                },
+            )
+
         dx, dy = load_fabric_offset(self.cal_dir)
         offset = FabricOffset(dx=dx, dy=dy)
+        # Fabric offset yoksa (0,0) döner — place koordinatları kayar.
+        # Hard-fail değil ama operatöre uyarı ver.
+        if dx == 0.0 and dy == 0.0:
+            await self.bus.emit(
+                "error",
+                {
+                    "code": "fabric_offset_missing",
+                    "msg": "fabric_offset.json yok — yerleşim merkeze kayabilir (CalibrationPanel > Fabric)",
+                },
+            )
         i = self.ctx.state.index
         total = len(self.rows)
         empty_retries = 0
