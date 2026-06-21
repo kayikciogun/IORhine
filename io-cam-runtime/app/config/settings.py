@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     max_contour_area: int = 80000
     show_mask: bool = False
     invert_threshold: bool = False
-    camera_jpeg_quality: int = 80
+    camera_jpeg_quality: int = 60
     # Stream optimize: encode öncesi downscale (0 = devre dışı).
     # 720p/1080p kamera → 640px'e düşür base64 payload'u küçült + encode hızlansın.
     camera_stream_max_width: int = 640

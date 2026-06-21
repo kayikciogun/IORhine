@@ -149,7 +149,7 @@ export interface DetectedStone {
 export type CameraEvent =
   | {
       evt: 'frame';
-      jpg_base64: string;
+      jpg_bytes: ArrayBuffer;
       stones: DetectedStone[];
       ts: number;
       fps?: number;

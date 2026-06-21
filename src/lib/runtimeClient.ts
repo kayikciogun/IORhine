@@ -345,16 +345,34 @@ export function connectCameraSocket(
       );
     }
   };
+  // Binary protokol: [4-byte big-endian JSON len][JSON metadata][raw JPEG]
+  // Text frame = error/control event (eski protokol uyumu).
+  ws.binaryType = 'arraybuffer';
   ws.onmessage = (msg) => {
     try {
-      const data = JSON.parse(msg.data as string) as CameraWsMessage & {
-        camera_warning?: string;
-      };
-      if (data.evt === 'frame') {
-        handlers.onFrame(data);
-        /* Kamera uyarısı frame ile gelir; WS kopmasın diye ayrı kanal */
+      if (typeof msg.data === 'string') {
+        // Text frame — error/control event (JSON)
+        const data = JSON.parse(msg.data) as CameraWsMessage & {
+          camera_warning?: string;
+        };
+        if (data.evt === 'error') handlers.onError?.(data.data.msg);
+        return;
       }
-      if (data.evt === 'error') handlers.onError?.(data.data.msg);
+      // Binary frame — camera frame
+      const buf = msg.data as ArrayBuffer;
+      const view = new DataView(buf);
+      const metaLen = view.getUint32(0, false); // big-endian
+      const metaBytes = new Uint8Array(buf, 4, metaLen);
+      const metaJson = String.fromCharCode(...metaBytes);
+      const meta = JSON.parse(metaJson) as Extract<
+        CameraEvent,
+        { evt: 'frame' }
+      > & { camera_warning?: string; mock_frame?: boolean };
+      const jpgBytes = buf.slice(4 + metaLen);
+      handlers.onFrame({
+        ...meta,
+        jpg_bytes: jpgBytes,
+      });
     } catch (e) {
       handlers.onError?.(String(e));
     }

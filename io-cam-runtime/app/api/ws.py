@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import time
@@ -192,23 +191,24 @@ async def ws_camera(websocket: WebSocket):
                 inst_fps = 1.0 / dt
                 fps_ema = inst_fps if fps_ema == 0 else fps_ema * 0.85 + inst_fps * 0.15
 
-            payload: dict = {
+            # Binary protokol: [4-byte big-endian JSON len][JSON metadata][raw JPEG]
+            # base64 +%33 şişirme yok, JSON parse frontend'de tek sefer.
+            meta = {
                 "evt": "frame",
-                "jpg_base64": base64.b64encode(buf.tobytes()).decode("ascii"),
                 "stones": stones,
                 "fps": round(fps_ema, 1),
                 "mode": "fast",
                 "ts": int(now * 1000),
             }
             if cam_err:
-                payload["camera_warning"] = cam_err
-            # Mock frame fallback durumu — kamera açılamadıysa veya frame
-            # okunamadıysa capture() mock döndürür. Client'a bildir ki
-            # kullanıcı gerçek kamera görmediğini anlasın.
+                meta["camera_warning"] = cam_err
             if not camera.is_live:
-                payload["mock_frame"] = True
+                meta["mock_frame"] = True
 
-            await websocket.send_text(json.dumps(payload))
+            meta_bytes = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+            jpg_bytes = buf.tobytes()
+            header = len(meta_bytes).to_bytes(4, "big")
+            await websocket.send_bytes(header + meta_bytes + jpg_bytes)
 
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0.0, interval - elapsed))

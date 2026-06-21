@@ -53,6 +53,8 @@ export default function LiveCameraView({
     fps: number | null;
     mock: boolean;
   } | null>(null);
+  // Blob URL leak önleme: her yeni URL'den önce eskisini revoke et.
+  const blobUrlRef = useRef<string | null>(null);
 
   const onFrameRef = useRef(onFrame);
   const onCameraErrorRef = useRef(onCameraError);
@@ -76,8 +78,11 @@ export default function LiveCameraView({
         // P2-B10: callback her zaman çağrılmalı (parent state için),
         // ama React state update'leri throttle edilir.
         onFrameRef.current?.(list, ev.fps ?? null);
+        // Binary protokol: raw JPEG bytes → Blob URL (base64 decode yok).
+        const blob = new Blob([ev.jpg_bytes], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
         pendingFrameRef.current = {
-          src: `data:image/jpeg;base64,${ev.jpg_base64}`,
+          src: url,
           stones: list,
           fps: ev.fps != null ? ev.fps : null,
           mock: ev.mock_frame === true,
@@ -87,6 +92,9 @@ export default function LiveCameraView({
           lastUpdateRef.current = now;
           const p = pendingFrameRef.current;
           if (p) {
+            // Önceki Blob URL'i revoke et (memory leak önle).
+            if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+            blobUrlRef.current = p.src;
             setSrc(p.src);
             setStones(p.stones);
             setFps(p.fps);
@@ -111,6 +119,8 @@ export default function LiveCameraView({
         setStones(p.stones);
         setFps(p.fps);
       }
+      // Son Blob URL'i revoke et (memory leak).
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
     };
   }, [enabled, streamKey]);
 
