@@ -1,6 +1,6 @@
 {
   "blur_kernel": 19,
-  "fast_detect_threshold": 36,
+  "fast_detect_threshold": 0,
   "min_contour_area": 2600,
   "max_contour_area": 90000,
   "show_mask": false,

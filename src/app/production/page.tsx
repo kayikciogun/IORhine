@@ -60,6 +60,7 @@ import {
   Factory,
   Video,
   ListOrdered,
+  Settings2,
   ScrollText,
 } from 'lucide-react';
 
@@ -446,108 +447,128 @@ export default function ProductionPage() {
           </div>
         </main>
 
-        {/* SAĞ: Yerleştirme listesi + Ayarlar (tab) */}
-        <aside className="w-full lg:w-[min(400px,36vw)] shrink-0 flex flex-col min-h-0 bg-card/30">
-          {/* Üst: Planlama özeti + yerleştirme tablosu */}
-          <section className="flex flex-col min-h-0 flex-[1.2] border-b border-border/60">
-            <div className="shrink-0 px-3 py-2.5 border-b border-border/60 bg-muted/20">
-              <PlanningSummaryCard
-                bundle={planningBundle}
-                glueStatus={glueStatus}
-                csvRowCount={csvRows.length}
-                fileName={
-                  selectedDxfFile?.name ?? loadPlacementSnapshot()?.fileName
-                }
-              />
-              <div className="flex items-center justify-between gap-2 mt-2">
-                <span className="text-xs flex items-center gap-1.5 font-medium">
-                  <ListOrdered className="w-3.5 h-3.5 text-primary" />
-                  Yerleştirme
-                </span>
-                {csvRows.length > 0 && (
-                  <Badge variant="secondary" className="text-[10px]">
-                    {csvRows.length} satır
-                  </Badge>
-                )}
-              </div>
-            </div>
-            <div className="flex-1 min-h-0 p-2 overflow-hidden flex flex-col">
-              <PlacementJobTable
-                rows={csvRows}
-                activeIndex={index}
-                phase={phase}
-                compact
-              />
-            </div>
-          </section>
+        {/* SAĞ: Açılır kapanır paneller (Accordion) */}
+        <aside className="w-full lg:w-[min(400px,36vw)] shrink-0 flex flex-col min-h-0 bg-card/30 overflow-y-auto custom-scrollbar">
+          <Accordion
+            type="multiple"
+            defaultValue={['summary', 'placement']}
+            className="flex flex-col"
+          >
+            {/* Planlama özeti */}
+            <AccordionItem value="summary" className="border-b border-border/60">
+              <AccordionTrigger className="px-3 py-2.5 text-xs hover:no-underline">
+                <div className="flex items-center gap-1.5">
+                  <Factory className="w-3.5 h-3.5 text-primary" />
+                  <span className="font-medium">Planlama Özeti</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3 pt-0">
+                <PlanningSummaryCard
+                  bundle={planningBundle}
+                  glueStatus={glueStatus}
+                  csvRowCount={csvRows.length}
+                  fileName={
+                    selectedDxfFile?.name ?? loadPlacementSnapshot()?.fileName
+                  }
+                />
+              </AccordionContent>
+            </AccordionItem>
 
-          {/* Alt: Ayarlar (tab) + Olay günlüğü (collapsible) */}
-          <section className="flex flex-col min-h-0 flex-1">
-            <div className="shrink-0 px-3 py-2 border-b border-border/60 bg-muted/20">
-              <Tabs value={settingsTab} onValueChange={setSettingsTab}>
-                <TabsList className="h-8 w-full grid grid-cols-4 bg-muted/50">
-                  <TabsTrigger value="vision" className="text-[10px] h-6 px-1">
-                    Görüntü
-                  </TabsTrigger>
-                  <TabsTrigger value="glue" className="text-[10px] h-6 px-1">
-                    Yapışkan
-                  </TabsTrigger>
-                  <TabsTrigger value="cal" className="text-[10px] h-6 px-1">
-                    Kalibrasyon
-                  </TabsTrigger>
-                  <TabsTrigger value="motion" className="text-[10px] h-6 px-1">
-                    Motion
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 custom-scrollbar space-y-3">
-              {settingsTab === 'vision' && (
-                <VisionTunePanel objects={detectedObjects} />
-              )}
-              {settingsTab === 'glue' && (
-                <GlueSheetStatusPanel
-                  status={glueStatus}
-                  loading={glueLoading}
-                  error={glueError}
-                  runtimeOnline={runtimeOnline}
+            {/* Yerleştirme tablosu */}
+            <AccordionItem value="placement" className="border-b border-border/60">
+              <AccordionTrigger className="px-3 py-2.5 text-xs hover:no-underline">
+                <div className="flex items-center gap-1.5">
+                  <ListOrdered className="w-3.5 h-3.5 text-primary" />
+                  <span className="font-medium">Yerleştirme</span>
+                  {csvRows.length > 0 && (
+                    <Badge variant="secondary" className="text-[10px] ml-1">
+                      {csvRows.length} satır
+                    </Badge>
+                  )}
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-2 pb-2 pt-0 max-h-[400px] overflow-y-auto">
+                <PlacementJobTable
+                  rows={csvRows}
                   activeIndex={index}
                   phase={phase}
-                  onReset={async () => {
-                    await resetGlueSheet();
-                    await refreshAux();
-                    appendLog('Glue sheet sıfırlandı');
-                  }}
+                  compact
                 />
-              )}
-              {settingsTab === 'cal' && (
-                <CalibrationPanel summary={calSummary} onRefresh={refreshAux} />
-              )}
-              {settingsTab === 'motion' && (
-                <div className="space-y-3">
-                  <MotionPortSelector
-                    disabled={loading}
-                    onSelected={(status) => {
-                      appendLog(
-                        status.mock_hardware
-                          ? 'Motion: mock hardware'
-                          : `Motion USB: ${status.serial_port}`,
-                      );
-                    }}
-                  />
-                  <MotionConfigPanel
-                    disabled={loading}
-                    onSaved={() => appendLog('Motion config kaydedildi')}
-                  />
-                </div>
-              )}
-            </div>
-          </section>
+              </AccordionContent>
+            </AccordionItem>
 
-          {/* Olay günlüğü — en altta, collapsible */}
-          <Accordion type="single" collapsible className="shrink-0 border-t border-border/60">
-            <AccordionItem value="log" className="border-0">
-              <AccordionTrigger className="px-3 py-2 text-xs hover:no-underline">
+            {/* Ayarlar — tab içinde */}
+            <AccordionItem value="settings" className="border-b border-border/60">
+              <AccordionTrigger className="px-3 py-2.5 text-xs hover:no-underline">
+                <div className="flex items-center gap-1.5">
+                  <Settings2 className="w-3.5 h-3.5 text-primary" />
+                  <span className="font-medium">Ayarlar</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3 pt-2 space-y-2">
+                <Tabs value={settingsTab} onValueChange={setSettingsTab}>
+                  <TabsList className="h-8 w-full grid grid-cols-4 bg-muted/50">
+                    <TabsTrigger value="vision" className="text-[10px] h-6 px-1">
+                      Görüntü
+                    </TabsTrigger>
+                    <TabsTrigger value="glue" className="text-[10px] h-6 px-1">
+                      Yapışkan
+                    </TabsTrigger>
+                    <TabsTrigger value="cal" className="text-[10px] h-6 px-1">
+                      Kalibrasyon
+                    </TabsTrigger>
+                    <TabsTrigger value="motion" className="text-[10px] h-6 px-1">
+                      Motion
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <div className="max-h-[400px] overflow-y-auto custom-scrollbar pt-1">
+                  {settingsTab === 'vision' && (
+                    <VisionTunePanel objects={detectedObjects} />
+                  )}
+                  {settingsTab === 'glue' && (
+                    <GlueSheetStatusPanel
+                      status={glueStatus}
+                      loading={glueLoading}
+                      error={glueError}
+                      runtimeOnline={runtimeOnline}
+                      activeIndex={index}
+                      phase={phase}
+                      onReset={async () => {
+                        await resetGlueSheet();
+                        await refreshAux();
+                        appendLog('Glue sheet sıfırlandı');
+                      }}
+                    />
+                  )}
+                  {settingsTab === 'cal' && (
+                    <CalibrationPanel summary={calSummary} onRefresh={refreshAux} />
+                  )}
+                  {settingsTab === 'motion' && (
+                    <div className="space-y-3">
+                      <MotionPortSelector
+                        disabled={loading}
+                        onSelected={(status) => {
+                          appendLog(
+                            status.mock_hardware
+                              ? 'Motion: mock hardware'
+                              : `Motion USB: ${status.serial_port}`,
+                          );
+                        }}
+                      />
+                      <MotionConfigPanel
+                        disabled={loading}
+                        onSaved={() => appendLog('Motion config kaydedildi')}
+                      />
+                    </div>
+                  )}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+
+            {/* Olay günlüğü */}
+            <AccordionItem value="log" className="border-b border-border/60">
+              <AccordionTrigger className="px-3 py-2.5 text-xs hover:no-underline">
                 <div className="flex items-center gap-1.5">
                   <ScrollText className="w-3.5 h-3.5 text-primary" />
                   <span className="font-medium">Olay Günlüğü</span>
