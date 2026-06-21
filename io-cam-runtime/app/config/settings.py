@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     show_mask: bool = False
     invert_threshold: bool = False
     camera_jpeg_quality: int = 80
+    # Stream optimize: encode öncesi downscale (0 = devre dışı).
+    # 720p/1080p kamera → 640px'e düşür base64 payload'u küçült + encode hızlansın.
+    camera_stream_max_width: int = 640
 
     rotation_axis: Literal["A", "E"] = _motion.get("rotation_axis", "A")  # type: ignore[arg-type]
     safe_z: float = _motion.get("safe_z", 5.0)

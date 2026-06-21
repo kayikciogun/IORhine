@@ -145,7 +145,9 @@ class Camera:
                         time.sleep(0.5)
 
             elapsed = time.monotonic() - t0
-            time.sleep(max(0.02, interval - elapsed))
+            # Min sleep 0 — capture thread ne kadar hızlı okuyabilirse o kadar.
+            # 20ms alt sınır duplicate frame'lere sebep oluyordu (50 FPS cap).
+            time.sleep(max(0.0, interval - elapsed))
 
     def capture(self) -> np.ndarray:
         """Son kareyi döndürür; VideoCapture yalnızca arka plan thread'inde okunur.

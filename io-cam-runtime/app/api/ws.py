@@ -157,11 +157,30 @@ async def ws_camera(websocket: WebSocket):
                 await asyncio.sleep(interval)
                 continue
 
-            ok, buf = cv2.imencode(
-                ".jpg",
-                annotated,
-                [cv2.IMWRITE_JPEG_QUALITY, settings.camera_jpeg_quality],
-            )
+            # Encode + resize'i thread havuzuna al — event loop'u bloklamasın.
+            # Resize: 640px'e düşür → base64 payload ~%60 küçülür, encode ~3x hızlanır.
+            max_w = settings.camera_stream_max_width
+
+            def _encode():
+                nonlocal annotated
+                if max_w > 0 and annotated.shape[1] > max_w:
+                    scale = max_w / annotated.shape[1]
+                    new_w = max_w
+                    new_h = int(annotated.shape[0] * scale)
+                    annotated = cv2.resize(annotated, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                ok, buf = cv2.imencode(
+                    ".jpg",
+                    annotated,
+                    [cv2.IMWRITE_JPEG_QUALITY, settings.camera_jpeg_quality],
+                )
+                return ok, buf
+
+            try:
+                ok, buf = await asyncio.to_thread(_encode)
+            except Exception:
+                logger.exception("imencode failed")
+                await asyncio.sleep(interval)
+                continue
             if not ok:
                 await asyncio.sleep(interval)
                 continue

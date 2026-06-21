@@ -44,7 +44,8 @@ export default function LiveCameraView({
   const [mockFrame, setMockFrame] = useState(false);
 
   // P2-B10: batch state updates + throttle. Her frame'de ayrı setState
-  // çağrısı 4 re-render tetikler; throttle ile 250ms'de bir toplu update.
+  // çağrısı 4 re-render tetikler; throttle ile ~66ms'de bir toplu update (~15 FPS UI).
+  // Backend 30 FPS gönderse bile UI 4 FPS'de güncelleniyordu (250ms) → yavaş görünüyordu.
   const lastUpdateRef = useRef(0);
   const pendingFrameRef = useRef<{
     src: string;
@@ -82,7 +83,7 @@ export default function LiveCameraView({
           mock: ev.mock_frame === true,
         };
         const now = performance.now();
-        if (now - lastUpdateRef.current >= 250) {
+        if (now - lastUpdateRef.current >= 66) {
           lastUpdateRef.current = now;
           const p = pendingFrameRef.current;
           if (p) {
