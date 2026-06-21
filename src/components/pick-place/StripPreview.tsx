@@ -6,14 +6,7 @@ import { useDxf } from '../../contexts/DxfContext';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Badge } from '../ui/badge';
-import {
-  Download,
-  LayoutGrid,
-  AlertCircle,
-  RefreshCw,
-  Info,
-} from 'lucide-react';
+import { Download, LayoutGrid, AlertCircle, RefreshCw } from 'lucide-react';
 import { loadGlueStripSnapshot, saveGlueStripSnapshot } from '@/lib/glueStripSync';
 import { countAssignedStones } from '@/lib/planningPipeline';
 import {
@@ -40,13 +33,10 @@ export default function StripPreview() {
   const [isStale, setIsStale] = useState(false);
   const hydratedRef = useRef(false);
 
-  // Sayfa yenilenince / geri dönünce session'dan şablonu geri yükle.
-  // Ref kullanıyoruz: state tabanlı guard stoneTypes geç gelince kalıcı takılıyordu.
   useEffect(() => {
-    if (hydratedRef.current) return;
-    if (!dxfScene) return;
+    if (hydratedRef.current || !dxfScene) return;
     const n = countAssignedStones(stoneTypes);
-    if (n === 0) return; // stoneTypes henüz context'ten gelmediyse bekle
+    if (n === 0) return;
     hydratedRef.current = true;
     const snap = loadGlueStripSnapshot();
     if (!snap || snap.cells.length === 0) return;
@@ -61,14 +51,7 @@ export default function StripPreview() {
   useEffect(() => {
     if (cells.length === 0) return;
     setIsStale(true);
-  }, [
-    stoneTypes,
-    cfg.cellSize,
-    cfg.rowLength,
-    cfg.cellGap,
-    cfg.stripOriginX,
-    cfg.stripOriginY,
-  ]);
+  }, [stoneTypes, cfg.cellSize, cfg.rowLength, cfg.stripOriginX, cfg.stripOriginY]);
 
   const pathToSvgString = (path: Path, offsetX: number, offsetY: number, close = true) => {
     if (!path || path.length === 0) return '';
@@ -99,7 +82,7 @@ export default function StripPreview() {
 
   const handleGenerate = () => {
     if (!dxfScene) {
-      alert('DXF sahnesi henüz yüklenmedi!');
+      alert('DXF sahnesi henuz yuklenmedi!');
       return;
     }
     const generated = generateStripData(dxfScene, stoneTypes, cfg);
@@ -126,15 +109,11 @@ export default function StripPreview() {
   const stripBounds = useMemo(() => {
     if (cells.length === 0) return null;
     const cellW =
-      typeof appliedConfig.cellSize === 'number' &&
-      Number.isFinite(appliedConfig.cellSize)
+      typeof appliedConfig.cellSize === 'number' && Number.isFinite(appliedConfig.cellSize)
         ? appliedConfig.cellSize
         : 20;
     const hs = cellW / 2;
-    let minX = Infinity,
-      maxX = -Infinity,
-      minSvgY = Infinity,
-      maxSvgY = -Infinity;
+    let minX = Infinity, maxX = -Infinity, minSvgY = Infinity, maxSvgY = -Infinity;
     for (const c of cells) {
       if (c.x - hs < minX) minX = c.x - hs;
       if (c.x + hs > maxX) maxX = c.x + hs;
@@ -157,118 +136,96 @@ export default function StripPreview() {
 
   return (
     <div className="flex flex-col h-full bg-background/50">
-      {/* Başlık */}
-      <div className="flex justify-between items-center mb-2">
+      <div className="flex justify-between items-start mb-2.5">
         <div>
-          <h2 className="text-base font-semibold flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <LayoutGrid className="w-4 h-4 text-primary" />
             3. Glue Levha
           </h2>
-          <p className="text-[10px] text-muted-foreground mt-0.5">
-            <strong>Üret</strong> ile önizleyin; gönderim alttaki 5. adımda.
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            <strong>Uret</strong> ile onizleyin; gonderim alttaki 5. adimda.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleGenerate}
-            disabled={totalStones === 0}
-            className="h-8"
-          >
+        <div className="flex gap-2 shrink-0">
+          <Button variant="outline" size="sm" onClick={handleGenerate} disabled={totalStones === 0} className="h-8">
             <RefreshCw className="w-3.5 h-3.5 mr-1" />
-            Üret
+            Uret
           </Button>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleDownloadDxf}
-            disabled={cells.length === 0}
-            className="h-8"
-          >
+          <Button variant="secondary" size="sm" onClick={handleDownloadDxf} disabled={cells.length === 0} className="h-8">
             <Download className="w-3.5 h-3.5 mr-1" />
-            DXF İndir
+            DXF
           </Button>
         </div>
       </div>
-
-  
 
       {/* Ayarlar */}
-      <div className="flex gap-2 mb-2 bg-muted/20 p-2 rounded-lg border border-border flex-wrap justify-between">
-        <div className="flex items-center gap-1.5">
-          <Label className="text-[11px] whitespace-nowrap" title="Satır başına max karo sayısı">
-            Sütun/satır:
+      <div className="grid grid-cols-2 gap-3 mb-3 bg-muted/20 p-3 rounded-lg border border-border">
+        <div>
+          <Label htmlFor="strip-row-length" className="text-[11px] text-muted-foreground mb-1 block">
+            Sütun / Satir
           </Label>
           <Input
+            id="strip-row-length"
             type="number"
-            className="w-12 h-6 text-xs px-1"
+            className="h-8 text-sm w-full"
             value={rowLenUi === '' ? '' : rowLenUi}
-            onChange={(e) =>
-              updatePickPlaceConfig({ rowLength: parseInt(e.target.value, 10) || 1 })
-            }
+            onChange={(e) => updatePickPlaceConfig({ rowLength: parseInt(e.target.value, 10) || 1 })}
             min={1}
+            aria-label="Sütun / Satır sayısı"
           />
         </div>
-        <div className="flex items-center gap-1.5">
-          <Label className="text-[11px] whitespace-nowrap">Hücre (mm):</Label>
+        <div>
+          <Label htmlFor="strip-cell-size" className="text-[11px] text-muted-foreground mb-1 block">
+            Hucre (mm)
+          </Label>
           <Input
+            id="strip-cell-size"
             type="number"
-            className="w-14 h-6 text-xs px-1"
+            className="h-8 text-sm w-full"
             value={cellSzUi === '' ? '' : cellSzUi}
-            onChange={(e) =>
-              updatePickPlaceConfig({ cellSize: parseFloat(e.target.value) || 20 })
-            }
+            onChange={(e) => updatePickPlaceConfig({ cellSize: parseFloat(e.target.value) || 20 })}
             min={5}
+            aria-label="Hücre boyutu (mm)"
           />
         </div>
       </div>
 
+      {/* Stale CTA */}
       {isStale && cells.length > 0 && (
-        <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11px]">
-          <RefreshCw className="w-3 h-3 shrink-0" />
-          <span>Ayarlar değişti — önizleme güncel değil. Yeniden üretin.</span>
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <span className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+            <RefreshCw className="w-3 h-3" />
+            Ayarlar degisti — "Uret" ile yenileyin.
+          </span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleGenerate}>
+            Yeniden Uret
+          </Button>
         </div>
       )}
 
       {totalStones === 0 ? (
         <div className="text-center p-4 m-auto border border-dashed rounded-lg text-muted-foreground w-full">
           <AlertCircle className="w-6 h-6 mb-2 opacity-50 mx-auto" />
-          <p className="text-sm">Henüz taş atanmamış.</p>
+          <p className="text-sm">Henuz tas atanmamis.</p>
         </div>
       ) : (
-        <div className="flex-1 bg-muted/30 border border-border rounded-lg overflow-auto relative p-2 flex justify-center items-start custom-scrollbar">
+        <div className="flex-1 bg-muted/30 border border-border rounded-lg overflow-auto relative p-3 flex justify-center items-start custom-scrollbar">
           {cells.length === 0 ? (
             <div className="text-center text-muted-foreground m-auto text-sm">
-              <p>Önizlemek için <strong>Üret</strong>'e tıklayın.</p>
-              <p className="text-xs mt-1 text-muted-foreground/70">
-                {totalStones} taş · her hücre hedef açıda gösterilir
-              </p>
+              <p>Onizlemek icin <strong>Uret</strong>'e tiklayin.</p>
+              <p className="text-xs mt-1 text-muted-foreground/70">{totalStones} tas · her hucre hedef acida gosterilir</p>
             </div>
           ) : (
             <svg
-              width={
-                stripBounds
-                  ? Math.min(560, Math.max(180, stripBounds.vbW * 4))
-                  : 200
-              }
-              height={
-                stripBounds
-                  ? Math.min(480, Math.max(160, stripBounds.vbH * 4))
-                  : 200
-              }
-              viewBox={
-                stripBounds
-                  ? `${stripBounds.vbX} ${stripBounds.vbY} ${stripBounds.vbW} ${stripBounds.vbH}`
-                  : '0 0 100 100'
-              }
+              width={stripBounds ? Math.min(560, Math.max(180, stripBounds.vbW * 4)) : 200}
+              height={stripBounds ? Math.min(480, Math.max(160, stripBounds.vbH * 4)) : 200}
+              viewBox={stripBounds ? `${stripBounds.vbX} ${stripBounds.vbY} ${stripBounds.vbW} ${stripBounds.vbH}` : '0 0 100 100'}
               preserveAspectRatio="xMidYMid meet"
-              className="mt-2 max-h-[min(52vh,420px)] w-full bg-background border shadow-sm"
+              className="mt-1 max-h-[min(52vh,420px)] w-full bg-background border shadow-sm rounded"
             >
               {cells.map((cell, i) => {
                 const cellDraw =
-                  typeof appliedConfig.cellSize === 'number' &&
-                  Number.isFinite(appliedConfig.cellSize)
+                  typeof appliedConfig.cellSize === 'number' && Number.isFinite(appliedConfig.cellSize)
                     ? appliedConfig.cellSize
                     : 20;
                 const hs = cellDraw / 2;
@@ -278,7 +235,6 @@ export default function StripPreview() {
                 const angle = cell.targetAngle ?? 0;
                 return (
                   <g key={i}>
-                    {/* Hücre kutusu */}
                     <rect
                       x={cx - hs}
                       y={svgYTop}
@@ -289,13 +245,9 @@ export default function StripPreview() {
                       strokeOpacity="0.25"
                       strokeWidth="0.5"
                     />
-
-                    {/* Taş kontürü — açık ARC/LINE için viewer'daki ham polyline noktaları */}
                     {cell.polylinePoints && cell.polylinePoints.length > 1 ? (
                       <polyline
-                        points={cell.polylinePoints
-                          .map((p) => `${cx + p.x},${cy - p.y}`)
-                          .join(' ')}
+                        points={cell.polylinePoints.map((p) => `${cx + p.x},${cy - p.y}`).join(' ')}
                         fill="none"
                         stroke={cell.color}
                         strokeWidth="0.8"
@@ -308,8 +260,6 @@ export default function StripPreview() {
                         strokeWidth="0.8"
                       />
                     )}
-
-                    {/* Sıra numarası */}
                     <text
                       x={cx - hs + 1}
                       y={svgYTop + 3.5}
@@ -319,8 +269,6 @@ export default function StripPreview() {
                     >
                       {i + 1}
                     </text>
-
-                    {/* Açı etiketi */}
                     {Math.abs(angle) > 0.5 && (
                       <text
                         x={cx + hs - 1}
@@ -336,7 +284,6 @@ export default function StripPreview() {
                   </g>
                 );
               })}
-
             </svg>
           )}
         </div>

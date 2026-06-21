@@ -36,13 +36,17 @@ def detect_all(
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     k = vis.blur_kernel | 1
     blurred = cv2.GaussianBlur(gray, (k, k), 0)
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    thresh_mode = cv2.THRESH_BINARY_INV if vis.invert_threshold else cv2.THRESH_BINARY
+    _, thresh = cv2.threshold(blurred, 0, 255, thresh_mode + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     stones: list[Stone] = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < vis.min_contour_area:
+        # P2-A1: alt sınır + üst sınır filtresi. Büyük kontürler (gölge, el,
+        # full-frame gürültü) ``max_contour_area`` ile elenir; yoksa matchShapes
+        # CPU boşa harcanır ve false-positive stone döner.
+        if area < vis.min_contour_area or area > vis.max_contour_area:
             continue
         norm = cnt.astype(np.float32)
         score = cv2.matchShapes(template.contour, norm, cv2.CONTOURS_MATCH_I1, 0)

@@ -48,7 +48,7 @@ export default function PlanningSummaryCard({
         </dd>
         <dt>Yapışkan ızgara</dt>
         <dd className="text-foreground">
-          {glueCells} karo ({glueGrid}, 20 mm)
+          {glueCells} karo ({glueGrid})
           {glueStatus != null && (
             <span className="text-muted-foreground">
               {' '}

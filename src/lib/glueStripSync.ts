@@ -94,6 +94,16 @@ export function loadGlueStripSnapshot(): GlueStripSnapshot | null {
     const raw = localStorage.getItem(LS_GLUE_STRIP);
     if (!raw) return null;
     const data = JSON.parse(raw) as Partial<GlueStripSnapshot> & { v?: number };
+    // P1-19: ``v`` alanı kontrol edilmiyordu; appSessionStore ile tutarsız.
+    // Eski/uyumsuz sürüm → null döndür, çağıran yeniden üretsin.
+    if (data.v !== 3) {
+      if (data.v != null) {
+        console.warn(
+          `[glueStripSync] beklenen sürüm v=3, bulunan v=${data.v}; snapshot yok sayıldı.`,
+        );
+      }
+      return null;
+    }
     if (!data.cells?.length || !data.config) return null;
     const { cols, rows } = data.cols && data.rows
       ? { cols: data.cols, rows: data.rows }
@@ -106,7 +116,8 @@ export function loadGlueStripSnapshot(): GlueStripSnapshot | null {
       cellSize: (c as GlueCellPreview).cellSize ?? data.config!.cellSize,
     }));
     return { v: 3, cells, config: data.config, cols, rows, savedAt: data.savedAt ?? Date.now() };
-  } catch {
+  } catch (e) {
+    console.warn('[glueStripSync] load failed (bozuk JSON?), veri yok sayıldı', e);
     return null;
   }
 }

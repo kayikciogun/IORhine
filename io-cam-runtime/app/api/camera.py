@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +17,12 @@ from app.runtime.camera_sources import (
 from app.services import services
 
 router = APIRouter(prefix="/api/camera", tags=["camera"])
+
+# P2-A5: /devices endpoint cache. ``list_all_devices`` macOS'ta
+# ``system_profiler`` (8 sn) + ``ffmpeg`` (12 sn) + OpenCV probe çağırır —
+# her istekte event loop'u 20+ sn bloklar. 5 sn TTL cache + thread offload.
+_DEVICES_CACHE: tuple[float, Any] | None = None
+_DEVICES_TTL = 5.0  # seconds
 
 
 class SelectCameraBody(BaseModel):
@@ -40,8 +48,19 @@ def _parse_device_id(device_id: str) -> CameraSourceConfig:
 
 @router.get("/devices")
 async def get_devices():
-    """Scan USB / V4L2 capture devices."""
-    return list_all_devices()
+    """Scan USB / V4L2 capture devices.
+
+    P2-A5: ``list_all_devices`` sync bloklayıcı (system_profiler + ffmpeg +
+    OpenCV probe, 20+ sn). ``asyncio.to_thread`` ile event loop'tan taşır +
+    5 sn TTL cache ile tekrarlayan çağrıları atlar.
+    """
+    global _DEVICES_CACHE
+    now = time.monotonic()
+    if _DEVICES_CACHE and now - _DEVICES_CACHE[0] < _DEVICES_TTL:
+        return _DEVICES_CACHE[1]
+    result = await asyncio.to_thread(list_all_devices)
+    _DEVICES_CACHE = (now, result)
+    return result
 
 
 @router.get("/status")

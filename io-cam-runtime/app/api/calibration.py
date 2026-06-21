@@ -45,7 +45,8 @@ async def calibrate_homography(body: HomographyCalibBody):
     """Capture frame and calibrate camera→robot homography via chessboard."""
     if not services.camera:
         services.init_hardware()
-    assert services.camera
+    if not services.camera:
+        raise HTTPException(status_code=503, detail="Kamera başlatılamadı")
     try:
         services.camera.open()
         frame = services.camera.capture()
@@ -65,6 +66,10 @@ async def calibrate_homography(body: HomographyCalibBody):
         }
     except HomographyCalibrationError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except (OSError, RuntimeError, ValueError) as e:
+        # Kamera/cv2 hatası (capture fail, open fail, frame bozuk) → 400
+        # (istemci düzeltici aksiyon alabilir: kamera bağla, ışık ayarla).
+        raise HTTPException(status_code=400, detail=f"Kalibrasyon hatası: {e}") from e
 
 
 @router.post("/calibration/fabric")

@@ -12,7 +12,7 @@ interface ViewerInteractionsConfig {
     renderer: THREE.WebGLRenderer | null;
     camera: THREE.PerspectiveCamera | null;
     scene: THREE.Scene | null;
-    mainGroup: THREE.Group | null;
+    mainGroup: THREE.Object3D | null;  // P3-E34: Group → Object3D (3D loaders Object3D dönebilir)
     controls: import('three/examples/jsm/controls/OrbitControls.js').OrbitControls | null;
     onSelectionChange?: (info: SelectionInfo) => void;
     isCameraMoving?: boolean; // ✅ Kamera hareket ediyor mu? (hover/seçimi devre dışı bırakmak için)
@@ -752,13 +752,15 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
         updateSelectionInfoPanel();
     }, [updateSelectionInfoPanel]);
 
-    useEffect(() => {
-        // DxfViewer.tsx'in dışarıdan trigger etmesi için hook:
-        (window as any).__forceRestoreMaterial = restoreMaterial;
-        return () => {
-             delete (window as any).__forceRestoreMaterial;
-        };
-    }, [restoreMaterial]);
+    // P2-B18: window.__forceRestoreMaterial hack'i kaldırıldı — artık
+    // ``restoreMaterial`` return value olarak expose ediliyor. DxfViewer
+    // ``useViewerInteractions``'dan alıp direkt çağırıyor.
+    // useEffect(() => {
+    //     (window as any).__forceRestoreMaterial = restoreMaterial;
+    //     return () => {
+    //          delete (window as any).__forceRestoreMaterial;
+    //     };
+    // }, [restoreMaterial]);
 
     // Raycasting utilities
     const raycaster = useRef(new THREE.Raycaster());
@@ -1940,6 +1942,7 @@ export function useViewerInteractions(config: ViewerInteractionsConfig) {
         materials,
         clearSelection,
         clearExclusions,
-        updateSelection
+        updateSelection,
+        restoreMaterial  // P2-B18: window hack yerine explicit return
     };
 }

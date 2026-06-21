@@ -16,6 +16,7 @@ class VisionSettingsBody(BaseModel):
     show_mask: bool = False
     match_threshold: float = Field(default=0.15, ge=0.01, le=2.0)
     threshold_auto: bool | None = None
+    invert_threshold: bool = False
 
 
 def _vision_to_dict(v: VisionConfig) -> dict:
@@ -27,6 +28,7 @@ def _vision_to_dict(v: VisionConfig) -> dict:
         "show_mask": v.show_mask,
         "match_threshold": v.match_threshold,
         "threshold_auto": v.fast_detect_threshold <= 0,
+        "invert_threshold": v.invert_threshold,
     }
 
 
@@ -46,6 +48,7 @@ async def update_vision_settings(body: VisionSettingsBody):
         max_contour_area=body.max_contour_area,
         show_mask=body.show_mask,
         match_threshold=body.match_threshold,
+        invert_threshold=body.invert_threshold,
     )
     set_vision(cfg)
     return {"ok": True, **_vision_to_dict(cfg)}

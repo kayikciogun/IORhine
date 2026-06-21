@@ -14,9 +14,10 @@ from ezdxf.entities import Arc, Circle, LWPolyline
 class StoneTemplate:
     shape_id: str
     contour: np.ndarray
-    hu_moments: np.ndarray
     is_symmetric: bool
-    asymmetry_signature: dict[str, float]
+    # P3-D30: ``hu_moments`` ve ``asymmetry_signature`` kaldırıldı — dead fields.
+    # ``cv2.matchShapes`` (detector.py) ``template.contour`` kullanır; hu_moments
+    # hiçbir yerde okunmuyordu. ``cv2.HuMoments`` computation da kaldırıldı.
 
 
 def normalize_contour(contour: np.ndarray) -> np.ndarray:
@@ -42,14 +43,35 @@ def build_template_from_contour(
     is_symmetric: bool = False,
 ) -> StoneTemplate:
     norm = normalize_contour(contour)
-    hu = cv2.HuMoments(cv2.moments(norm))
+    # P3-D30: cv2.HuMoments computation kaldırıldı — dead field (hiç okunmuyordu).
     return StoneTemplate(
         shape_id=shape_id,
         contour=norm,
-        hu_moments=hu.flatten(),
         is_symmetric=is_symmetric,
-        asymmetry_signature={},
     )
+
+
+def _detect_symmetry(contour: np.ndarray, *, tol: float = 0.05) -> bool:
+    """P2-A7: kontürün 180° rotasyonel simetrisini tespit et.
+
+    Simetrik taşlar (daire, kare, düzgün çokgen) için PCA major-axis
+    açısı 180° belirsizdir; ``is_symmetric=True`` ile ``contour_angle_deg``
+    0-180 normalize eder (daha stabil). Asimetrik taşlar için ``False`` → 0-360.
+    """
+    pts = contour.reshape(-1, 2).astype(np.float64)
+    if len(pts) < 4:
+        return False
+    centroid = pts.mean(axis=0)
+    # 180° rotation about centroid: p' = 2*c - p
+    rotated = 2 * centroid - pts
+    # Her rotated noktasının en yakın original noktaya olan mesafesi
+    # (brute-force KD-tree yerine — küçük N için yeterli)
+    scale = np.linalg.norm(pts.std(axis=0)) + 1e-9
+    max_dist = 0.0
+    for rp in rotated:
+        dists = np.linalg.norm(pts - rp, axis=1)
+        max_dist = max(max_dist, float(dists.min()))
+    return max_dist < tol * scale
 
 
 def _arc_points(arc: Arc, step_deg: float = 5.0) -> list[tuple[float, float]]:
@@ -144,7 +166,10 @@ def build_template_from_dxf_bytes(shape_id: str, dxf_bytes: bytes) -> StoneTempl
     """Build template from DXF; uses placeholder contour if parse fails."""
     contour = extract_contour_from_dxf_bytes(shape_id, dxf_bytes)
     if contour is not None:
-        return build_template_from_contour(shape_id, contour, is_symmetric=False)
+        # P2-A7: DXF entity tipinden simetri tespiti. CIRCLE → simetrik;
+        # LWPOLYLINE/LINE → _detect_symmetry ile geometric kontrol.
+        sym = _detect_symmetry(contour)
+        return build_template_from_contour(shape_id, contour, is_symmetric=sym)
 
     # Frontend can assign synthetic handles for split LWPOLYLINE segments
     # (example: "432_seg_6"). Those ids do not exist in the raw DXF, so try
@@ -153,10 +178,11 @@ def build_template_from_dxf_bytes(shape_id: str, dxf_bytes: bytes) -> StoneTempl
         parent_shape_id = shape_id.split("_seg_", 1)[0]
         contour = extract_contour_from_dxf_bytes(parent_shape_id, dxf_bytes)
         if contour is not None:
-            return build_template_from_contour(parent_shape_id, contour, is_symmetric=False)
+            sym = _detect_symmetry(contour)
+            return build_template_from_contour(parent_shape_id, contour, is_symmetric=sym)
 
     pts = np.array(
         [[-5, -5], [5, -5], [5, 5], [-5, 5]],
         dtype=np.float32,
     ).reshape(-1, 1, 2)
-    return build_template_from_contour(shape_id, pts, is_symmetric=False)
+    return build_template_from_contour(shape_id, pts, is_symmetric=True)

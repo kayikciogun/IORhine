@@ -18,6 +18,7 @@ export default function CalibrationPanel({ summary, onRefresh }: Props) {
   const [glueOx, setGlueOx] = useState('0');
   const [glueOy, setGlueOy] = useState('0');
   const [glueZ, setGlueZ] = useState('0.5');
+  const [glueCellSize, setGlueCellSize] = useState('20');
   const [chessCols, setChessCols] = useState('9');
   const [chessRows, setChessRows] = useState('6');
   const [squareMm, setSquareMm] = useState('20');
@@ -33,12 +34,18 @@ export default function CalibrationPanel({ summary, onRefresh }: Props) {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
+      // Hata durumunda onRefresh çağırma (P1-17): hata mesajı kaybolur.
       const err = await res.json().catch(() => ({}));
       const detail = (err as { detail?: string }).detail;
       throw new Error(detail ?? `${path} failed (${res.status})`);
     }
+    // Başarılı POST sonrası refresh + JSON parse (204 No Content'i güvenli atla).
     onRefresh();
-    return res.json();
+    if (res.status === 204 || res.headers.get('content-length') === '0') {
+      return {};
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : {};
   }
 
   async function calibrateHomography() {
@@ -92,6 +99,15 @@ export default function CalibrationPanel({ summary, onRefresh }: Props) {
           <Label className="text-[10px]">Glue Z</Label>
           <Input className="h-7 text-xs" value={glueZ} onChange={(e) => setGlueZ(e.target.value)} />
         </div>
+        <div>
+          <Label className="text-[10px]">Cell size (mm)</Label>
+          <Input
+            className="h-7 text-xs"
+            type="number"
+            value={glueCellSize}
+            onChange={(e) => setGlueCellSize(e.target.value)}
+          />
+        </div>
       </div>
       <Button
         size="sm"
@@ -101,7 +117,7 @@ export default function CalibrationPanel({ summary, onRefresh }: Props) {
             origin_x: parseFloat(glueOx),
             origin_y: parseFloat(glueOy),
             z: parseFloat(glueZ),
-            cell_size: 20,
+            cell_size: parseFloat(glueCellSize) || 20,
           })
             .then(() => setMsg('Yapışkan ızgarası kaydedildi'))
             .catch((e) => setMsg(String(e)))

@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class VisionConfig:
     blur_kernel: int = 9
     fast_detect_threshold: int = 120  # web_angle varsayılan; 0 = Otsu
-    min_contour_area: int = 600
+    min_contour_area: int = 500  # settings.py + README ile uyumlu (P1-21)
     max_contour_area: int = 80000
     show_mask: bool = False
     match_threshold: float = 0.15
+    invert_threshold: bool = False  # True = taş açık, zemin koyu
 
 
 def _vision_path(cal_dir: Path) -> Path:
@@ -31,15 +35,38 @@ def load_vision_config(cal_dir: Path | None = None) -> VisionConfig:
             max_contour_area=getattr(settings, "max_contour_area", 80000),
             show_mask=getattr(settings, "show_mask", False),
             match_threshold=settings.match_threshold,
+            invert_threshold=getattr(settings, "invert_threshold", False),
         )
-    data = json.loads(p.read_text(encoding="utf-8"))
+    # Bozuk JSON'u sessizce default'a düşmek yerine logla + uyarı ver (P1-11).
+    # Eski davranış: ``json.loads`` exception fırlatır → runtime crash. Yeni
+    # davranış: logla, default VisionConfig döndür, ama çağıranın haberi olur.
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(
+            "vision.json bozuk veya okunamadı (%s); defaults kullanılıyor. "
+            "Dosyayı düzeltin veya silin: %s", e, p
+        )
+        return VisionConfig(
+            blur_kernel=settings.blur_kernel,
+            fast_detect_threshold=settings.fast_detect_threshold,
+            min_contour_area=settings.min_contour_area,
+            max_contour_area=getattr(settings, "max_contour_area", 80000),
+            show_mask=getattr(settings, "show_mask", False),
+            match_threshold=settings.match_threshold,
+            invert_threshold=getattr(settings, "invert_threshold", False),
+        )
+    if not isinstance(data, dict):
+        logger.warning("vision.json kök nesne değil (%s); defaults kullanılıyor.", type(data).__name__)
+        return VisionConfig()
     return VisionConfig(
         blur_kernel=int(data.get("blur_kernel", 9)),
         fast_detect_threshold=int(data.get("fast_detect_threshold", 120)),
-        min_contour_area=int(data.get("min_contour_area", 600)),
+        min_contour_area=int(data.get("min_contour_area", 500)),
         max_contour_area=int(data.get("max_contour_area", 80000)),
         show_mask=bool(data.get("show_mask", False)),
         match_threshold=float(data.get("match_threshold", 0.15)),
+        invert_threshold=bool(data.get("invert_threshold", False)),
     )
 
 
@@ -57,6 +84,7 @@ def apply_vision_to_settings(cfg: VisionConfig) -> None:
     settings.max_contour_area = cfg.max_contour_area
     settings.show_mask = cfg.show_mask
     settings.match_threshold = cfg.match_threshold
+    settings.invert_threshold = cfg.invert_threshold
 
 
 # Module-level cache (reloaded on save / startup)

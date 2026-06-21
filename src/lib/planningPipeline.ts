@@ -151,8 +151,17 @@ export async function sendPlanningToMachine(
   }
 
   saveGlueStripSnapshot(cells, input.config);
-  // saveGlueStripSnapshot SVG+cols+rows dahil her şeyi yazar; oradan oku
-  const glueSnap = loadGlueStripSnapshot()!;
+  // saveGlueStripSnapshot SVG+cols+rows dahil her şeyi yazar; oradan oku.
+  // ``!`` iddiası SSR veya localStorage quota hatasında null dönebilir; bu
+  // durumda kullanıcıya anlamlı bir hata gösterip erken çıkmak daha güvenli.
+  const glueSnap = loadGlueStripSnapshot();
+  if (!glueSnap) {
+    return {
+      ok: false,
+      message:
+        'Yapışkan şablon kaydedilemedi (localStorage yazma/okuma hatası veya SSR).',
+    };
+  }
   const cols = glueSnap.cols;
   const gridRows = glueSnap.rows;
 

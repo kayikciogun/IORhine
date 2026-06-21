@@ -21,6 +21,14 @@ router = APIRouter(tags=["websocket"])
 
 @router.websocket("/ws/control")
 async def ws_control(websocket: WebSocket):
+    # P3-G45: Auth token — ``?token=`` query param. ``settings.control_token``
+    # boş ise auth disabled (dev/test). Production'ta set et.
+    token = settings.control_token
+    if token:
+        client_token = websocket.query_params.get("token", "")
+        if client_token != token:
+            await websocket.close(code=4401)  # Unauthorized
+            return
     await websocket.accept()
     services.ws_clients.append(websocket)
 
@@ -31,11 +39,21 @@ async def ws_control(websocket: WebSocket):
             pass
 
     services.bus.subscribe(forward)
-
+    # Subscriber leak fix: ``finally`` bloğunda unsubscribe yapılmalı; yoksa
+    # bağlantı kapandıktan sonra bile event'ler kapalı socket'e yazılmaya
+    # çalışılır → memory leak + ``send_text`` exception spam.
     try:
         while True:
             raw = await websocket.receive_text()
-            msg = json.loads(raw)
+            # Bozuk JSON bağlantıyı kırmasın; client'e hata event'i gönder ve devam et.
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await services.bus.emit(
+                    "error",
+                    {"code": "bad_json", "msg": f"Geçersiz JSON: {raw[:120]!r}"},
+                )
+                continue
             cmd = msg.get("cmd")
             if cmd == "start":
                 if services.runner:
@@ -55,13 +73,28 @@ async def ws_control(websocket: WebSocket):
             elif cmd == "stop" and services.runner:
                 await services.runner.stop()
             elif cmd == "estop" and services.motion:
+                # E-stop: M410 + vakum kapat + çalışan job_runner._task'i iptal et.
+                # Aksi halde acil durdurma sonrası _run_loop devam edebilir ve
+                # güvensiz hareketler üretebilir.
                 services.motion.emergency_stop()
                 services.ctx.stop_requested = True
+                services.ctx.pause_event.set()
                 services.ctx.state.phase = JobPhase.ERROR
                 await services.bus.emit("error", {"code": "estop", "msg": "Emergency stop"})
+                runner = services.runner
+                if runner is not None:
+                    task = getattr(runner, "_task", None)
+                    if task is not None and not task.done():
+                        task.cancel()
+                        try:
+                            await asyncio.wait_for(task, timeout=2.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                            pass
     except WebSocketDisconnect:
         pass
     finally:
+        # Subscriber leak fix: forward callback'i EventBus'tan çıkar.
+        services.bus.unsubscribe(forward)
         if websocket in services.ws_clients:
             services.ws_clients.remove(websocket)
 
@@ -150,6 +183,11 @@ async def ws_camera(websocket: WebSocket):
             }
             if cam_err:
                 payload["camera_warning"] = cam_err
+            # Mock frame fallback durumu — kamera açılamadıysa veya frame
+            # okunamadıysa capture() mock döndürür. Client'a bildir ki
+            # kullanıcı gerçek kamera görmediğini anlasın.
+            if not camera.is_live:
+                payload["mock_frame"] = True
 
             await websocket.send_text(json.dumps(payload))
 

@@ -59,6 +59,21 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
   const firstFrameLoggedRef = useRef<boolean>(false);
   const resizeLogRef = useRef<number>(0);
   const cameraAnimationRef = useRef<number | null>(null);
+  // P2-B19: pending setTimeout'ları track et — unmount'ta clearTimeout.
+  // Eski kod setTimeout'leri cleanup etmiyordu; unmount sonrası callback
+  // null ``sceneRef.current``'e erişip crash yapabilirdi.
+  const pendingTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const trackedSetTimeout = useCallback(
+    (fn: () => void, ms: number): ReturnType<typeof setTimeout> => {
+      const id = setTimeout(() => {
+        pendingTimeoutsRef.current.delete(id);
+        fn();
+      }, ms);
+      pendingTimeoutsRef.current.add(id);
+      return id;
+    },
+    [],
+  );
 
   // Yumuşak kamera animasyonu fonksiyonu
   const animateCameraToPosition = useCallback((
@@ -104,7 +119,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     };
 
     // Animasyonu geciktir - performans optimizasyonu
-    setTimeout(() => {
+    trackedSetTimeout(() => {
       cameraAnimationRef.current = requestAnimationFrame(animate);
     }, 100);
 
@@ -159,7 +174,8 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     selectedObjectsSet,
     selectionInfo,
     clearSelection,
-    clearExclusions
+    clearExclusions,
+    restoreMaterial  // P2-B18: window hack yerine explicit return
   } = useViewerInteractions(viewerConfig);
 
   // ✅ Boundary edges visibility control + Mesh seçilebilirliğini kapat
@@ -260,10 +276,12 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
         obj.userData.pickPlaceLinewidth = isHighlighted ? 6 : 3;
         
         if (!selectedObjectsSet.has(obj)) {
-          // Tetik mekanizması için geçici bir hack, etkisini useViewerInteractions yönetmeli
-          // Ama objemizin "seçili olmayan durumuna" dönmesi için bir refresh trick:
-          if ((window as any).__forceRestoreMaterial && typeof (window as any).__forceRestoreMaterial === 'function') {
-            (window as any).__forceRestoreMaterial(obj);
+          // P2-B18: window.__forceRestoreMaterial hack'i kaldırıldı —
+          // artık ``restoreMaterial`` useViewerInteractions return value'sundan alınıyor.
+          if (restoreMaterial && typeof restoreMaterial === 'function') {
+            // obj Object3D'dir; restoreMaterial Line2/Group/Mesh/Line bekler.
+            // Güvenli cast — restoreMaterial içinde instanceof kontrolü var.
+            restoreMaterial(obj as any);
           }
         }
       }
@@ -498,7 +516,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     };
 
     // İlk yüklemede animasyonu geciktir - performans optimizasyonu
-    setTimeout(() => {
+    trackedSetTimeout(() => {
       animate();
     }, 50);
 
@@ -602,6 +620,11 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     if (animationIdRef.current) {
       cancelAnimationFrame(animationIdRef.current);
     }
+
+    // P2-B19: pending setTimeout'leri clearTimeout ile iptal et —
+    // unmount sonrası callback'ler null sceneRef'e erişip crash yapmasın.
+    pendingTimeoutsRef.current.forEach((id) => clearTimeout(id));
+    pendingTimeoutsRef.current.clear();
 
     if (rendererRef.current && mountRef.current) {
       mountRef.current.removeChild(rendererRef.current.domElement);
@@ -887,7 +910,10 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
             !(child instanceof THREE.AmbientLight) &&
             !(child instanceof THREE.DirectionalLight)
         );
-        objectsToRemove.forEach(obj => sceneRef.current!.remove(obj));
+        objectsToRemove.forEach(obj => {
+          // P2-B19: sceneRef.current! yerine null guard
+          if (sceneRef.current) sceneRef.current.remove(obj);
+        });
         debug.log('[3D Viewer] Cleared scene objects', { removed: objectsToRemove.length });
       }
 
@@ -1143,24 +1169,29 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
         // Restore selections by handle after loading 3D object with a delay
         // to ensure all materials and effects are properly initialized
         // Mesh'ler ve material'lerin tam olarak hazır olması için biraz daha fazla bekliyoruz
-        setTimeout(() => {
-          restoreSelectionsByHandle(sceneRef.current!);
+        trackedSetTimeout(() => {
+          // P2-B19: sceneRef.current! yerine null guard
+          if (sceneRef.current) restoreSelectionsByHandle(sceneRef.current);
           debug.log('[3D Viewer] Selections restored after 3D object load');
         }, 250);
 
         // Position camera
-        const fov = cameraRef.current!.fov * (Math.PI / 180);
+        // P2-B19: cameraRef.current! yerine null guard + early return
+        if (!cameraRef.current) return;
+        const fov = cameraRef.current.fov * (Math.PI / 180);
         let cameraZ = Math.abs(finalMaxDim / 2 / Math.tan(fov / 2));
         cameraZ = Math.max(cameraZ * 1.5, 200);
 
-        setTimeout(() => {
+        trackedSetTimeout(() => {
           const targetPosition = new THREE.Vector3(finalCenter.x, finalCenter.y, finalCenter.z + cameraZ);
           const targetLookAt = finalCenter.clone();
 
           // Kamera projeksiyon ayarlarını hemen yap
-          cameraRef.current!.near = Math.max(0.1, cameraZ * 0.01);
-          cameraRef.current!.far = Math.max(10000, cameraZ * 10);
-          cameraRef.current!.updateProjectionMatrix();
+          if (cameraRef.current) {
+            cameraRef.current.near = Math.max(0.1, cameraZ * 0.01);
+            cameraRef.current.far = Math.max(10000, cameraZ * 10);
+            cameraRef.current.updateProjectionMatrix();
+          }
 
           // Yumuşak animasyonla kamera pozisyonunu ayarla
           animateCameraToPosition(targetPosition, targetLookAt, 800);
@@ -1275,7 +1306,10 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
             !(child instanceof THREE.AmbientLight) &&
             !(child instanceof THREE.DirectionalLight)
         );
-        objectsToRemove.forEach(obj => sceneRef.current!.remove(obj));
+        objectsToRemove.forEach(obj => {
+          // P2-B19: sceneRef.current! yerine null guard
+          if (sceneRef.current) sceneRef.current.remove(obj);
+        });
       }
 
       // Create default material for Line2 objects
@@ -1311,8 +1345,9 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
 
         // Restore selections by handle after loading new content with a delay
         // to ensure all materials and effects are properly initialized
-        setTimeout(() => {
-          restoreSelectionsByHandle(sceneRef.current!);
+        trackedSetTimeout(() => {
+          // P2-B19: sceneRef.current! yerine null guard
+          if (sceneRef.current) restoreSelectionsByHandle(sceneRef.current);
         }, 100);
 
         // Ensure Line2 objects render consistently
@@ -1342,19 +1377,23 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
         const size = fitSize;
         const center = fitCenter;
         const maxDim = Math.max(size.x, size.y, size.z || 0.001);
-        const fov = cameraRef.current!.fov * (Math.PI / 180);
+        // P2-B19: cameraRef.current! yerine null guard + early return
+        if (!cameraRef.current) return;
+        const fov = cameraRef.current.fov * (Math.PI / 180);
         let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
         cameraZ = Math.max(cameraZ * 1.5, 200); // padding + minimum distance
 
         // Use setTimeout to ensure proper camera positioning with smooth animation
-        setTimeout(() => {
+        trackedSetTimeout(() => {
           const targetPosition = new THREE.Vector3(center.x, center.y, center.z + cameraZ);
           const targetLookAt = center.clone();
 
           // Kamera projeksiyon ayarlarını hemen yap
-          cameraRef.current!.near = Math.max(0.1, cameraZ * 0.01);
-          cameraRef.current!.far = Math.max(10000, cameraZ * 10);
-          cameraRef.current!.updateProjectionMatrix();
+          if (cameraRef.current) {
+            cameraRef.current.near = Math.max(0.1, cameraZ * 0.01);
+            cameraRef.current.far = Math.max(10000, cameraZ * 10);
+            cameraRef.current.updateProjectionMatrix();
+          }
 
           // Yumuşak animasyonla kamera pozisyonunu ayarla
           animateCameraToPosition(targetPosition, targetLookAt, 800);
@@ -1505,7 +1544,7 @@ const DxfViewerContent: React.FC<DxfViewerProps> = ({ className, hideControls = 
     }
 
     // Add initial grid and axes after a short delay to ensure scene is ready
-    setTimeout(() => {
+    trackedSetTimeout(() => {
       if (sceneRef.current) {
         if (viewerState.showGrid) {
           const gridHelper = new THREE.GridHelper(10000, 100, 0x444444, 0x222222);

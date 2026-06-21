@@ -62,8 +62,13 @@ class GlueSheet:
             encoding="utf-8",
         )
 
-    def next_cell(self) -> tuple[float, float, float]:
-        """Bir sonraki boş hücrenin (x, y, z) merkezini döndür."""
+    def reserve_cell(self) -> tuple[float, float, float]:
+        """P2-A8: Bir sonraki boş hücrenin (x, y, z) merkezini döndür — cursor advance ETMEZ.
+
+        ``next_cell``'den farklı olarak cursor'u ilerletmez; motion başarılı olduktan
+        sonra ``commit()`` çağrılmalı. Başarısızlıkta ``commit()`` çağrılmazsa aynı
+        hücre tekrar reserve edilir (gap yok).
+        """
         if self.cursor >= self.cols * self.rows:
             raise GlueSheetExhausted()
         idx = self.cursor
@@ -72,8 +77,21 @@ class GlueSheet:
         half = self.cell_size / 2
         x = self.origin_x + col * self.cell_size + half
         y = self.origin_y + row * self.cell_size + half
+        return x, y, self.z
+
+    def commit(self) -> None:
+        """P2-A8: Reserve edilen hücreyi tüketilmiş işaretle (motion success sonrası)."""
         self.cursor += 1
         self._save_state()
+
+    def next_cell(self) -> tuple[float, float, float]:
+        """Bir sonraki boş hücrenin (x, y, z) merkezini döndür.
+
+        Backward-compat: reserve + commit birlikte. Yeni kod ``reserve_cell()`` +
+        ``commit()`` kullanmalı (motion success sonrası commit).
+        """
+        x, y, z = self.reserve_cell()
+        self.commit()
         return x, y, self.z
 
     def remaining(self) -> int:

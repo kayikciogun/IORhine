@@ -86,6 +86,7 @@ export interface PlacementCsvRow {
   target_y: number;
   target_angle: number;
   shape_id: string;
+  thickness: number;
 }
 
 export interface GlueSheetStatus {
@@ -111,6 +112,7 @@ export interface VisionSettings {
   show_mask: boolean;
   match_threshold: number;
   threshold_auto?: boolean;
+  invert_threshold?: boolean;
 }
 
 export type ControlCommand =
@@ -124,10 +126,11 @@ export type RuntimeEvent =
   | { evt: 'state'; data: { phase: JobPhase; i: number; total: number } }
   | { evt: 'placed'; data: { i: number; took_ms: number } }
   | { evt: 'error'; data: { code: string; msg: string } }
-  | { evt: 'operator_feed_required'; data?: Record<string, never> }
+  // P3-E37: ``Record<string, never>`` → ``void`` — daha temiz, aynı anlam.
+  | { evt: 'operator_feed_required'; data?: void }
   | { evt: 'glue_cell'; data: { cell: number; x: number; y: number } }
-  | { evt: 'glue_sheet_exhausted'; data?: Record<string, never> }
-  | { evt: 'job_complete'; data?: Record<string, never> };
+  | { evt: 'glue_sheet_exhausted'; data?: void }
+  | { evt: 'job_complete'; data?: void };
 
 export interface DetectedStone {
   id?: number;
@@ -151,6 +154,8 @@ export type CameraEvent =
       ts: number;
       fps?: number;
       mode?: 'fast' | 'full';
+      camera_warning?: string;
+      mock_frame?: boolean;
     };
 
 export function defaultRuntimeConfig() {

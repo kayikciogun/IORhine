@@ -3,8 +3,15 @@
 set -euo pipefail
 BASE="${RUNTIME_URL:-http://localhost:8000}"
 
+# P2-C22: ``curl -sf ... | head`` kombinasyonu SIGPIPE'a düşebilir —
+# ``curl`` büyük response yazarken ``head`` erken çıkınca ``EPIPE``.
+# ``set +o pipefail`` bu satırlarda; ``--max-filesize`` ile response'u sınırla.
+# Alternatif: ``curl -sf -o /tmp/out`` + ``head /tmp/out``.
+
 echo "Health..."
-curl -sf "$BASE/health" | head -c 200
+set +o pipefail
+curl -sf --max-filesize 200 "$BASE/health" | head -c 200
+set -o pipefail
 echo
 
 CSV='id,target_x,target_y,target_angle,shape_id
@@ -12,7 +19,9 @@ CSV='id,target_x,target_y,target_angle,shape_id
 '
 
 echo "Upload job..."
-curl -sf -X POST "$BASE/api/job" -F "csv=$CSV" | head -c 200
+set +o pipefail
+curl -sf --max-filesize 200 -X POST "$BASE/api/job" -F "csv=$CSV" | head -c 200
+set -o pipefail
 echo
 
 echo "Status..."

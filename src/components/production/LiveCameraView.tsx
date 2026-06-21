@@ -41,6 +41,17 @@ export default function LiveCameraView({
   const [connected, setConnected] = useState(false);
   const [fps, setFps] = useState<number | null>(null);
   const [camError, setCamError] = useState<string | null>(null);
+  const [mockFrame, setMockFrame] = useState(false);
+
+  // P2-B10: batch state updates + throttle. Her frame'de ayrı setState
+  // çağrısı 4 re-render tetikler; throttle ile 250ms'de bir toplu update.
+  const lastUpdateRef = useRef(0);
+  const pendingFrameRef = useRef<{
+    src: string;
+    stones: DetectedStone[];
+    fps: number | null;
+    mock: boolean;
+  } | null>(null);
 
   const onFrameRef = useRef(onFrame);
   const onCameraErrorRef = useRef(onCameraError);
@@ -60,19 +71,46 @@ export default function LiveCameraView({
       },
       onClose: () => setConnected(false),
       onFrame: (ev) => {
-        setSrc(`data:image/jpeg;base64,${ev.jpg_base64}`);
         const list = ev.stones ?? [];
-        setStones(list);
-        if (ev.fps != null) setFps(ev.fps);
-        setCamError(null);
+        // P2-B10: callback her zaman çağrılmalı (parent state için),
+        // ama React state update'leri throttle edilir.
         onFrameRef.current?.(list, ev.fps ?? null);
+        pendingFrameRef.current = {
+          src: `data:image/jpeg;base64,${ev.jpg_base64}`,
+          stones: list,
+          fps: ev.fps != null ? ev.fps : null,
+          mock: ev.mock_frame === true,
+        };
+        const now = performance.now();
+        if (now - lastUpdateRef.current >= 250) {
+          lastUpdateRef.current = now;
+          const p = pendingFrameRef.current;
+          if (p) {
+            setSrc(p.src);
+            setStones(p.stones);
+            setFps(p.fps);
+            setMockFrame(p.mock);
+            // P2-B10: camError null'ı sadece error varken set et —
+            // her frame'de gereksiz re-render'i önler.
+            setCamError((prev) => (prev === null ? prev : null));
+          }
+        }
       },
       onError: (msg) => {
         setCamError(msg);
         onCameraErrorRef.current?.(msg);
       },
     });
-    return () => conn.close();
+    // P2-B10: unmount'ta pending frame flush (son frame kaybı önlenir)
+    return () => {
+      conn.close();
+      const p = pendingFrameRef.current;
+      if (p) {
+        setSrc(p.src);
+        setStones(p.stones);
+        setFps(p.fps);
+      }
+    };
   }, [enabled, streamKey]);
 
   if (!enabled) {
@@ -109,9 +147,11 @@ export default function LiveCameraView({
         </Badge>
       </div>
 
-      {camError && (
+      {(camError || mockFrame) && (
         <div className="absolute bottom-1.5 left-1.5 right-1.5 z-10 text-[9px] text-amber-200 bg-black/70 rounded px-1.5 py-0.5">
-          {camError}
+          {mockFrame
+            ? '⚠ Mock frame — kamera açılamadı veya frame okunamıyor'
+            : camError}
         </div>
       )}
 

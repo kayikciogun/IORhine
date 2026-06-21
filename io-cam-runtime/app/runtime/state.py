@@ -40,6 +40,9 @@ class RuntimeContext:
     state: JobState = field(default_factory=JobState)
     pause_event: asyncio.Event = field(default_factory=asyncio.Event)
     stop_requested: bool = False
+    # Art arda vacuum_pick_failed sayacı; job_runner bunu art arda N başarısızlıkta
+    # ERROR'a geçmek için kullanır (job_runner._run_loop).
+    vacuum_fail_streak: int = 0
 
     def __post_init__(self) -> None:
         self.pause_event.set()

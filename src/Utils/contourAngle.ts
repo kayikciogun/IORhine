@@ -4,6 +4,11 @@
  *
  * Kontürün DXF desen üzerindeki duruş açısını hesaplar (rota eksenine vereceğimiz derece).
  * Çember/kare gibi aspect ratio ≈ 1 şekillerde 0° döner (her yönde aynı).
+ *
+ * P2-B16: Açı aralığı uyumu — frontend burada [0, 180) döner (simetrik taşlar
+ * için 180° belirsiz); vision pipeline'ı (``io-cam-runtime/app/vision/pca_angle.py``
+ * ve ``detector.py``) [0, 360) döner. ``is_symmetric`` flag'i (template_loader)
+ * ile simetrik taşlar 0-180 normalize edilir. README §7'ye bakın.
  */
 
 export type Point2D = { x: number; y: number };

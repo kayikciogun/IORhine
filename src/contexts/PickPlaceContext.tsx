@@ -26,7 +26,7 @@ const defaultPickPlaceConfig: PickPlaceConfig = {
   stripOriginY: -100.0,
   cellSize: 20,
   rowLength: 100,
-  cellGap: 0,
+  // P2-B17: cellGap kaldırıldı (dead field)
 };
 
 function toFiniteNumber(v: unknown, fallback: number): number {

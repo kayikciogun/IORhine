@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     mock_hardware: bool = False
     serial_port: str = "/dev/ttyUSB0"
     serial_baud: int = 115200
+    # GcodeDriver.send() komut başına deadline (s); kart 'ok' göndermezse burada
+    # MarlinError fırlatır. Hareket + dwell + rotation için yeterli olmalı (≥ 5 s).
+    serial_timeout_s: float = 10.0
 
     settling_ms: int = 300
     empty_stone_retries: int = 5
@@ -57,6 +60,7 @@ class Settings(BaseSettings):
     fast_detect_threshold: int = 120
     max_contour_area: int = 80000
     show_mask: bool = False
+    invert_threshold: bool = False
     camera_jpeg_quality: int = 80
 
     rotation_axis: Literal["A", "E"] = _motion.get("rotation_axis", "A")  # type: ignore[arg-type]
@@ -70,6 +74,11 @@ class Settings(BaseSettings):
     vacuum_on_dwell_s: float = _motion.get("vacuum_on_dwell_s", 0.15)
     vacuum_off_dwell_s: float = _motion.get("vacuum_off_dwell_s", 0.15)
     glue_dwell_s: float = _motion.get("glue_dwell_s", 0.5)
+
+    # P3-G45: WebSocket auth token — ``?token=`` query param ile doğrulama.
+    # Boş string → auth disabled (dev/test). Production'ta ``IO_CAM_CONTROL_TOKEN``
+    # env var ile set et.
+    control_token: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -1,0 +1,41 @@
+# ── Geliştirme ortamı ─────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Testler ve test çıktıları ────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ── Python bytecode ve paketleme kalıntıları ─────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+*.egg
+
+# ── IDE ve editör dosyaları ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Git ve dokümantasyon ─────────────────────────────────────────────
+.git/
+.gitignore
+*.md
+LICENSE
+LICENSE.*
+
+# ── Container meta ───────────────────────────────────────────────────
+Dockerfile
+.dockerignore
+docker-compose*.yml

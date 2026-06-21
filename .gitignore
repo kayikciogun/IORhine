@@ -89,6 +89,15 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Calibration runtime state — saha artıkları commit'lenmemeli (P1-20).
+# Default/şablon dosyalar (örn. glue_sheet.json default) elle yazılırsa
+# ``!`` ile istisna eklenebilir; şimdilik tüm runtime state'i ignore et.
+io-cam-runtime/calibration/motion_serial.json
+io-cam-runtime/calibration/camera_source.json
+io-cam-runtime/calibration/glue_sheet_state.json
+io-cam-runtime/calibration/fabric_offset.json
+io-cam-runtime/calibration/homography.npy
+
 # IDX
 .idx/
 .vercel

@@ -24,6 +24,7 @@ export default function VisionTunePanel({ objects = [] }: Props) {
   const [maxArea, setMaxArea] = useState(80000);
   const [showMask, setShowMask] = useState(false);
   const [matchTh, setMatchTh] = useState(0.15);
+  const [invertThreshold, setInvertThreshold] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const readyRef = useRef(false);
@@ -38,8 +39,9 @@ export default function VisionTunePanel({ objects = [] }: Props) {
       show_mask: showMask,
       match_threshold: matchTh,
       threshold_auto: autoThresh,
+      invert_threshold: invertThreshold,
     };
-  }, [autoThresh, blur, matchTh, maxArea, minArea, showMask, threshold]);
+  }, [autoThresh, blur, invertThreshold, matchTh, maxArea, minArea, showMask, threshold]);
 
   const pushLive = useCallback(
     (body: VisionSettings) => {
@@ -68,6 +70,7 @@ export default function VisionTunePanel({ objects = [] }: Props) {
       setMaxArea(v.max_contour_area ?? 80000);
       setShowMask(v.show_mask ?? false);
       setMatchTh(v.match_threshold);
+      setInvertThreshold(v.invert_threshold ?? false);
       readyRef.current = true;
     } catch (e) {
       setMsg(String(e));
@@ -174,6 +177,22 @@ export default function VisionTunePanel({ objects = [] }: Props) {
             <Label htmlFor="mask" className="text-[10px] cursor-pointer">
               Maske görünümü
             </Label>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 bg-amber-500/5">
+            <Switch
+              id="invert"
+              checked={invertThreshold}
+              onCheckedChange={setInvertThreshold}
+            />
+            <div className="flex-1">
+              <Label htmlFor="invert" className="text-[10px] cursor-pointer font-medium">
+                Ters kontrast
+              </Label>
+              <p className="text-[9px] text-muted-foreground/80 leading-tight mt-0.5">
+                Açık taş / koyu zemin (konveyör kirlenirse)
+              </p>
+            </div>
           </div>
 
           <details className="text-[10px]">

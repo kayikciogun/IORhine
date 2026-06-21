@@ -22,6 +22,10 @@ INSTALL_ONLY=0
 SKIP_INSTALL=0
 SKIP_RUNTIME=0
 SKIP_FRONTEND=0
+# P2-C25: ``--reload`` varsayılan kapalı (production güvenliği). ``--dev``
+# flag'ı ile açılır; production'ta uvicorn --reload kullanılmaz (hot-reload
+# overhead + dosya izleyici process'leri).
+DEV_MODE=0
 
 RUNTIME_PID=""
 FRONTEND_PID=""
@@ -59,6 +63,7 @@ err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mock) MOCK_HARDWARE=1 ;;
+    --dev) DEV_MODE=1 ;;  # P2-C25: --reload + verbose logging
     --install) INSTALL_ONLY=1 ;;
     --no-install) SKIP_INSTALL=1 ;;
     --skip-runtime) SKIP_RUNTIME=1 ;;
@@ -77,8 +82,33 @@ need_cmd() {
 }
 
 version_ge() {
-  # version_ge "3.11.0" "3.11"
-  printf '%s\n%s\n' "$2" "$1" | sort -V -C
+  # version_ge "3.11.0" "3.11" → $1 >= $2 ?
+  # macOS / BSD ``sort -V`` tutarsız; Python'un standart kütüphanesine
+  # devredilir (harici ``packaging`` bağımlılığı yok). Karşılaştırma
+  # nokta-sayı tuple'ı üzerinden yapılır; eksik segmentler 0 olarak kabul
+  # edilir (PEP 440 sürüm normalleştirmesine uygun).
+  python3 - "$1" "$2" <<'PY'
+import sys
+from sys import version_info as _vi
+
+def _parse(v: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for p in v.split("."):
+        n = ""
+        for ch in p:
+            if ch.isdigit():
+                n += ch
+            else:
+                break
+        parts.append(int(n) if n else 0)
+    # PEP 440: "3.11" → (3, 11, 0)
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+a, b = _parse(sys.argv[1]), _parse(sys.argv[2])
+sys.exit(0 if a >= b else 1)
+PY
 }
 
 check_prerequisites() {
@@ -161,8 +191,12 @@ cleanup() {
     wait "$RUNTIME_PID" 2>/dev/null || true
   fi
   if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
+    # P2-C25 (macOS fix): ``setsid`` kaldırıldı — ``nohup`` ile başlatıldığı için
+    # process group yok. Direkt PID kill + npm alt süreçleri pkill ile yakala.
     kill "$FRONTEND_PID" 2>/dev/null || true
     wait "$FRONTEND_PID" 2>/dev/null || true
+    # next-server alt süreçlerini de sonlandır
+    pkill -f "next-server" 2>/dev/null || true
   fi
   # uvicorn --reload alt süreçleri
   pkill -f "uvicorn app.main:app" 2>/dev/null || true
@@ -204,21 +238,33 @@ start_runtime() {
   fi
 
   log "Runtime başlatılıyor (port ${RUNTIME_PORT})…"
+  # P2-C25: ``--reload`` sadece ``--dev`` flag'inde. Production'ta kapalı.
+  local reload_flag=""
+  if [[ "$DEV_MODE" -eq 1 ]]; then
+    reload_flag="--reload"
+    warn "Dev mode: --reload açık (production'ta kullanma)"
+  fi
   (
     cd "$RUNTIME_DIR"
-    exec uvicorn app.main:app --reload --host 0.0.0.0 --port "$RUNTIME_PORT"
-  ) >"$LOG_DIR/runtime.log" 2>&1 &
+    exec uvicorn app.main:app $reload_flag --host 0.0.0.0 --port "$RUNTIME_PORT"
+  ) >>"$LOG_DIR/runtime.log" 2>&1 &  # P2-C25: ``>`` → ``>>`` append
   RUNTIME_PID=$!
   wait_for_runtime
 }
 
 start_frontend() {
   log "Next.js başlatılıyor (port ${FRONTEND_PORT})…"
+  # P2-C25 (macOS fix): ``setsid`` Linux-only — macOS'ta yok. Subshell kullanmıyoruz
+  # çünkü subshell içinde ``$!`` parent'e propagate olmaz (FRONTEND_PID boş kalır).
+  # ``nohup`` + ``&`` ile arka plan. ``disown`` KULLANMIYORUZ çünkü disown job'u
+  # shell job table'dan kaldırır ve ``wait $FRONTEND_PID`` anında döner (script biter).
+  # Ctrl+C'de ``cleanup`` trap'i ``FRONTEND_PID``'i kill eder; npm alt süreçleri
+  # ``pkill -f next-server`` ile yakalanır.
   (
-    cd "$ROOT"
-    export NEXT_PUBLIC_RUNTIME_URL="$RUNTIME_URL"
-    exec npm run dev
-  ) 2>&1 | tee "$LOG_DIR/frontend.log" &
+    cd "$ROOT" && \
+    export NEXT_PUBLIC_RUNTIME_URL="$RUNTIME_URL" && \
+    exec nohup npm run dev >>"$LOG_DIR/frontend.log" 2>&1
+  ) &
   FRONTEND_PID=$!
 }
 

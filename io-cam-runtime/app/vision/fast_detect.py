@@ -47,6 +47,7 @@ def process_frame(
     min_area: int = 600,
     max_area: int = 80000,
     blur_kernel: int = 9,
+    invert_threshold: bool = False,
     draw: bool = True,
 ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
     """
@@ -56,10 +57,13 @@ def process_frame(
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     k = blur_kernel | 1
     blur = cv2.GaussianBlur(gray, (k, k), 0)
+    # invert_threshold=True: taş açık, zemin koyu → koyu alanları maskele → BINARY_INV
+    # invert_threshold=False: taş koyu, zemin açık → açık alanları maskele → BINARY
+    thresh_mode = cv2.THRESH_BINARY_INV if invert_threshold else cv2.THRESH_BINARY
     if thresh_val <= 0:
-        _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        _, bw = cv2.threshold(blur, 0, 255, thresh_mode + cv2.THRESH_OTSU)
     else:
-        _, bw = cv2.threshold(blur, thresh_val, 255, cv2.THRESH_BINARY_INV)
+        _, bw = cv2.threshold(blur, thresh_val, 255, thresh_mode)
 
     contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = frame.copy() if draw else frame

@@ -52,6 +52,8 @@ function GlueStripMini({
       viewBox={`${-hs} ${-hs} ${gridW + cellSize} ${gridH + cellSize}`}
       className="w-full rounded border border-border bg-muted/20"
       style={{ maxHeight: 200 }}
+      role="img"
+      aria-label={`Yapışkan levha: ${cols}×${rows} hücre, ${cells.length} dolu`}
     >
       {cells.map((cell, i) => {
         const col = i % cols;
@@ -211,7 +213,7 @@ export default function GlueSheetStatusPanel({
         <span>
           Kalan: <strong>{status.remaining}</strong> / {status.total}
           <span className="text-muted-foreground ml-1">
-            ({status.cols}×{status.rows}, 20 mm)
+            ({status.cols}×{status.rows}, {localSnap?.config.cellSize ?? 20} mm)
           </span>
         </span>
         <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={onReset}>

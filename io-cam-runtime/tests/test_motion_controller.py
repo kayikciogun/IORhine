@@ -14,3 +14,14 @@ def test_home_and_move():
     mc.rotate_c(45)
     mc.rotate_c_to(0)
     mc.sync()
+    # P2-C20: MockSerial.written buffer'ını inspect et — komutların gerçekten
+    # gönderildiğini doğrula. Sadece ``ok`` dönmesi komutun gönderildiği anlamına
+    # gelmez; write() hiç çağrılmasa da ``ok`` dönebilir (mock default).
+    written = driver.ser.written  # type: ignore[attr-defined]
+    assert any("G28" in w for w in written), f"home (G28) not sent: {written}"
+    assert any("X10" in w and "Y20" in w for w in written), (
+        f"move_xy(10,20) not sent: {written}"
+    )
+    assert any("M106 S255" in w for w in written), f"vacuum_on (M106 S255) not sent: {written}"
+    assert any("M107" in w for w in written), f"vacuum_off (M107) not sent: {written}"
+    assert any("M400" in w for w in written), f"sync (M400) not sent: {written}"

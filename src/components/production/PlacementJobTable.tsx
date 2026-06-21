@@ -107,7 +107,8 @@ export default function PlacementJobTable({ rows, activeIndex, phase, compact }:
           compact && 'flex-1 min-h-0',
         )}
       >
-        <Table>
+        <Table aria-label="Yerleştirme listesi">
+          <caption className="sr-only">Yerleştirme listesi — {rows.length} satır</caption>
           <TableHeader className="sticky top-0 bg-muted/90 backdrop-blur z-10">
             <TableRow>
               <TableHead className="w-10 text-xs">#</TableHead>
@@ -124,7 +125,7 @@ export default function PlacementJobTable({ rows, activeIndex, phase, compact }:
 
               return (
                 <TableRow
-                  key={`${row.id}-${row.shape_id}-${i}`}
+                  key={`${row.id}-${row.shape_id}`}
                   ref={(el) => {
                     if (
                       el &&

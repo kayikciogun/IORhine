@@ -468,25 +468,8 @@ export function createCavalierOffsets(path: Path, offset: number, forceClosed: b
     }
 }
 
-/**
- * Cavalier Contours ile Boolean Intersection operasyonu gerçekleştirir
- * NOT: Yeni multi-pline offset mantığı kullanıldığından bu fonksiyon artık gerekli değil
- * @deprecated Multi-pline offset kullanın
- */
-export function performCavalierBooleanIntersection(subjectPath: Path, clipPaths: Path[]): Path[] {
-    debug.warn("[offsetUtils] Bu fonksiyon deprecated - multi-pline offset kullanın");
-    return [subjectPath];
-}
-
-/**
- * Cavalier Contours ile Boolean operasyonu gerçekleştirir
- * NOT: Yeni multi-pline offset mantığı kullanıldığından bu fonksiyon artık gerekli değil
- * @deprecated Multi-pline offset kullanın
- */
-export function performCavalierBooleanOp(subjectPath: Path, clipPaths: Path[]): Path[] {
-    debug.warn("[offsetUtils] Bu fonksiyon deprecated - multi-pline offset kullanın");
-    return [subjectPath];
-}
+// P3-D28: ``performCavalierBooleanIntersection`` ve ``performCavalierBooleanOp``
+// kaldırıldı — zero call sites, deprecated. Multi-pline offset kullanın.
 
 /**
  * Multi-Pline Parallel Offset - Demo'daki gibi çoklu polyline offset işlemi

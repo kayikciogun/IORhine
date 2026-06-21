@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable
 
 import numpy as np
 
@@ -23,11 +22,10 @@ class Camera:
         config: CameraSourceConfig | None = None,
         *,
         mock: bool = False,
-        on_reopen: Callable[[], None] | None = None,
     ):
         self._config = config
         self.mock = mock
-        self._on_reopen = on_reopen
+        # P3-D32: ``on_reopen`` kaldırıldı — unused param (zero callers passed it).
         self._source: FrameSource | None = None
         self._latest: np.ndarray | None = None
         self._latest_ts: float = 0.0
@@ -43,11 +41,19 @@ class Camera:
         return self._config
 
     def open(self) -> None:
+        # Sessiz fail fix (P1-10): eskiden exception'u yutup sadece ``_error``
+        # set ediyordu; çağıran kod (ws.py, calibration.py) ``open()`` başarılı
+        # sanıp mock frame ile devam ediyordu → yanıltıcı kalibrasyon. Artık
+        # hatayı yeniden fırlat; thread yine de başlatılır (mock frame akışı için).
         try:
             self._open_source()
         except Exception as e:
             with self._lock:
                 self._error = str(e)
+            self._start_thread()
+            raise
+        # P2-fix: başarılı open'da da arka plan thread'i başlat — yoksa
+        # ``_latest`` hiç dolmaz ve ``capture()`` her zaman mock frame döndürür.
         self._start_thread()
 
     def _open_source(self) -> None:
@@ -100,8 +106,7 @@ class Camera:
                 self._read_failures = 0
                 try:
                     self._open_source()
-                    if self._on_reopen:
-                        self._on_reopen()
+                    # P3-D32: on_reopen callback kaldırıldı (unused)
                 except Exception:
                     pass
 
@@ -143,11 +148,23 @@ class Camera:
             time.sleep(max(0.02, interval - elapsed))
 
     def capture(self) -> np.ndarray:
-        """Son kareyi döndürür; VideoCapture yalnızca arka plan thread'inde okunur."""
+        """Son kareyi döndürür; VideoCapture yalnızca arka plan thread'inde okunur.
+
+        Eğer arka plan thread henüz frame okuyamadıysa (kamera açılmadı,
+        frame okuma hatası, veya ilk frame henüz gelmedi) ``_mock_frame()``
+        döndürür. ``is_live`` property ile çağıran kod gerçek frame olup
+        olmadığını anlayabilir.
+        """
         with self._lock:
             if self._latest is not None:
                 return self._latest.copy()
         return _mock_frame()
+
+    @property
+    def is_live(self) -> bool:
+        """Son kare gerçek kamera frame'i mi yoksa mock fallback mi?"""
+        with self._lock:
+            return self._latest is not None
 
     def close(self) -> None:
         self._stop.set()

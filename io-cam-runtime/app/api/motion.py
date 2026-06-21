@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from serial.tools import list_ports
@@ -72,6 +74,35 @@ def _status() -> dict:
     }
 
 
+async def _teardown_running_motion() -> None:
+    """Config/port değişiminde çalışan job'u güvenli şekilde durdur.
+
+    Eski kod ``services.motion = None`` yapıp ``services.runner = None`` yapıyordu
+    ama çalışan ``runner._task`` iptal edilmiyordu → task eski driver referansını
+    kullanmaya devam edip ``SerialException`` fırlatıyordu. Bu yardımcı önce
+    runner'ı durdurur (5 sn timeout), sonra driver'ı kapatır.
+    """
+    runner = services.runner
+    if runner is not None:
+        task = getattr(runner, "_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+    motion = services.motion
+    if motion is not None:
+        driver = getattr(motion, "driver", None)
+        if driver is not None and hasattr(driver, "close"):
+            try:
+                driver.close()
+            except Exception:
+                pass
+    services.motion = None
+    services.runner = None
+
+
 @router.get("/ports")
 async def motion_ports():
     ports = [_port_to_dict(p) for p in list_ports.comports()]
@@ -116,11 +147,7 @@ async def select_motion_port(body: SelectMotionPortBody):
     settings.serial_port = body.serial_port
 
     if services.motion is not None:
-        driver = services.motion.driver
-        if hasattr(driver, "close"):
-            driver.close()
-        services.motion = None
-        services.runner = None
+        await _teardown_running_motion()
 
     return {"ok": True, "status": _status()}
 
@@ -141,10 +168,6 @@ async def update_motion_config(body: MotionConfigBody):
 
     # Rotation axis is cached by MotionController; recreate controller on next job.
     if services.motion is not None:
-        driver = services.motion.driver
-        if hasattr(driver, "close"):
-            driver.close()
-        services.motion = None
-        services.runner = None
+        await _teardown_running_motion()
 
     return {"ok": True, "config": _motion_config()}

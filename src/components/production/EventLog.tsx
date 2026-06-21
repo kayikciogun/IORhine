@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import type { RuntimeEvent } from '@/types/runtime';
 
 interface LogEntry {
@@ -12,14 +13,18 @@ interface Props {
   entries: LogEntry[];
 }
 
-export default function EventLog({ entries }: Props) {
+// P2-B13: virtualization-lite — son 200 entry'i render et (parent zaten
+// slice(-200) yapıyor ama burada da cap). React.memo ile gereksiz re-render
+// önlenir; key'ten ``i`` çıkarıldı (id+ts zaten unique).
+function EventLogImpl({ entries }: Props) {
+  const visible = entries.slice(-200);
   return (
     <div className="rounded-md border border-border bg-muted/20 max-h-[160px] overflow-y-auto p-2 text-[10px] font-mono space-y-0.5">
-      {entries.length === 0 && (
+      {visible.length === 0 && (
         <p className="text-muted-foreground">Henüz olay yok.</p>
       )}
-      {entries.map((e, i) => (
-        <div key={`${e.id}-${e.ts.getTime()}-${i}`} className="text-foreground/90">
+      {visible.map((e) => (
+        <div key={`${e.id}-${e.ts.getTime()}`} className="text-foreground/90">
           <span className="text-muted-foreground">
             {e.ts.toLocaleTimeString()}{' '}
           </span>
@@ -29,6 +34,9 @@ export default function EventLog({ entries }: Props) {
     </div>
   );
 }
+
+const EventLog = memo(EventLogImpl);
+export default EventLog;
 
 export function runtimeEventToLogText(ev: RuntimeEvent): string {
   switch (ev.evt) {

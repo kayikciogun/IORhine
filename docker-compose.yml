@@ -12,7 +12,12 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Browser-side (client) runtime URL — host makineden erişim.
       - NEXT_PUBLIC_RUNTIME_URL=http://localhost:8000
+      # P1-24: SSR (server-side render) container içinden runtime'a erişirken
+      # ``localhost`` container'ın kendisini işaret eder → runtime'a ulaşamaz.
+      # Docker network DNS'i ile runtime container adını kullan.
+      - RUNTIME_INTERNAL_URL=http://runtime:8000
     depends_on:
       - runtime
     restart: unless-stopped

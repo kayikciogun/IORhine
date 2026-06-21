@@ -1,7 +1,7 @@
 {
-  "name": "GCodeCrafter",
-  "short_name": "GCodeCrafter",
-  "description": "Generate G-code for your CNC milling operations with AI",
+  "name": "IO-CAM Pick & Place",
+  "short_name": "IO-CAM",
+  "description": "IO-CAM pick & place planlama ve üretim kontrol paneli",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#000000",
@@ -11,7 +11,7 @@
   "prefer_related_applications": false,
   "display_override": ["window-controls-overlay", "standalone"],
   "categories": ["productivity", "utilities"],
-  "lang": "en",
+  "lang": "tr",
   "dir": "ltr",
   "icons": [
     {

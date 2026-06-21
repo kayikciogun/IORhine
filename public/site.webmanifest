@@ -1,6 +1,7 @@
 {
-    "name": "Genfavicon Package",
-    "short_name": "Genfavicon",
+    "name": "IO-CAM Pick & Place",
+    "short_name": "IO-CAM",
+    "description": "IO-CAM pick & place planlama ve üretim kontrol paneli",
     "icons": [
         {
             "src": "genfavicon-16.png",

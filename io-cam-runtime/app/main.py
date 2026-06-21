@@ -20,8 +20,22 @@ async def lifespan(_app: FastAPI):
     apply_motion_config(settings, load_motion_config(settings.calibration_dir))
     init_runtime_store()
     yield
-    if services.motion and hasattr(services.motion.driver, "close"):
-        services.motion.driver.close()
+    # Lifespan teardown: motion driver + kamera thread/VideoCapture leak'i
+    # önlemek için kapat (P1-6). Kamera arka plan thread + OpenCV capture
+    # tutuyorsa release edilmezse process kapansa bile cihaz kilitli kalabilir.
+    # P3-D: getattr ile güvenli erişim — test mock'ları ``driver`` attribute'e
+    # sahip olmayabilir (MotionController yerine minimal mock kullanılırsa).
+    _driver = getattr(services.motion, "driver", None) if services.motion else None
+    if _driver and hasattr(_driver, "close"):
+        try:
+            _driver.close()
+        except Exception:
+            pass
+    if services.camera is not None:
+        try:
+            services.camera.close()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="IO-CAM Runtime", version="0.1.0", lifespan=lifespan)
@@ -30,8 +44,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # P3-G43: CORS restrict — ``*`` yerine explicit method/headers.
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 app.include_router(job.router)

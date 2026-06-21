@@ -1,6 +1,0 @@
-#!/usr/bin/sh
-
-. /boot/boot.conf
-kexec --load /boot/$IMAGE --command-line="$BOOTARGS"
-
-systemctl kexec

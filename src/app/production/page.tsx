@@ -9,7 +9,7 @@ import { placementOrdersToCsv } from '@/operations/csvExport';
 import { ordersToRows } from '@/lib/placementCsv';
 import { loadPlacementSnapshot, savePlacementSnapshot } from '@/lib/appSessionStore';
 import { loadGlueStripSnapshot, syncGlueStripToRuntime } from '@/lib/glueStripSync';
-import { loadPlanningBundle } from '@/lib/planningPipeline';
+import { loadPlanningBundle, type PlanningBundle } from '@/lib/planningPipeline';
 import PlanningSummaryCard from '@/components/production/PlanningSummaryCard';
 import {
   connectControlSocket,
@@ -49,6 +49,12 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
+import {
   ArrowLeft,
   Upload,
   RefreshCw,
@@ -56,6 +62,13 @@ import {
   Video,
   ListOrdered,
   Settings2,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  Usb,
+  SlidersHorizontal,
+  PlaySquare,
+  ScrollText,
 } from 'lucide-react';
 
 export default function ProductionPage() {
@@ -77,9 +90,15 @@ export default function ProductionPage() {
   const [glueError, setGlueError] = useState<string | null>(null);
   const [logEntries, setLogEntries] = useState<{ id: number; ts: Date; text: string }[]>([]);
   const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
-  const [planningBundle, setPlanningBundle] = useState(
-    () => (typeof window !== 'undefined' ? loadPlanningBundle() : null),
-  );
+  // P2-B12: offline guard + exponential backoff. Runtime offline iken
+  // 8s interval her seferinde fetch yapar — CPU/network boşa. ``runtimeOnlineRef``
+  // ile offline iken early-return; backoff 8s→16s→32s (max 32s).
+  const runtimeOnlineRef = useRef<boolean | null>(null);
+  const refreshBackoffRef = useRef<number>(8000);
+  // Hydration fix: ``typeof window`` SSR/CSR branch'i hydration mismatch yaratır
+  // (server null render eder, client bundle render eder → <p> vs <div> farkı).
+  // İlk render her zaman null (empty state), mount sonrası useEffect ile yükle.
+  const [planningBundle, setPlanningBundle] = useState<PlanningBundle | null>(null);
   const logId = useRef(0);
   const controlRef = useRef<ReturnType<typeof connectControlSocket> | null>(null);
 
@@ -106,15 +125,25 @@ export default function ProductionPage() {
   );
 
   const refreshAux = useCallback(async () => {
+    // P2-B12: offline iken early-return — runtime down iken her 8s fetch yapma.
+    // İlk yükleme ve manuel refresh (runtimeOnlineRef === null) her zaman çalışır.
+    if (runtimeOnlineRef.current === false) {
+      return;
+    }
     setGlueLoading(true);
     try {
       const base = getDefaultRuntimeClientConfig().restBaseUrl;
       const health = await fetch(`${base}/health`);
       const online = health.ok;
       setRuntimeOnline(online);
+      runtimeOnlineRef.current = online;
+      // P2-B12: online ise backoff'u resetle.
+      if (online) refreshBackoffRef.current = 8000;
       if (!online) {
         setGlueError('Runtime yanıt vermiyor');
         setGlueStatus(null);
+        // P2-B12: exponential backoff 8s→16s→32s (cap).
+        refreshBackoffRef.current = Math.min(refreshBackoffRef.current * 2, 32000);
         return;
       }
       const cal = await getCalibration();
@@ -129,8 +158,11 @@ export default function ProductionPage() {
       }
     } catch {
       setRuntimeOnline(false);
+      runtimeOnlineRef.current = false;
       setGlueStatus(null);
       setGlueError('Runtime bağlantısı kurulamadı');
+      // P2-B12: backoff artır.
+      refreshBackoffRef.current = Math.min(refreshBackoffRef.current * 2, 32000);
     } finally {
       setGlueLoading(false);
     }
@@ -184,8 +216,16 @@ export default function ProductionPage() {
       }
       void refreshAux();
     }
-    const t = setInterval(() => void refreshAux(), 8000);
-    return () => clearInterval(t);
+    // P2-B12: recursive setTimeout ile dynamic backoff — setInterval yerine.
+    // Offline iken 8s→16s→32s; online iken 8s sabit.
+    let timer: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      timer = setTimeout(() => {
+        void refreshAux().finally(() => scheduleNext());
+      }, refreshBackoffRef.current);
+    };
+    scheduleNext();
+    return () => clearTimeout(timer);
   }, [refreshAux, appendLog]);
 
   useEffect(() => {
@@ -200,15 +240,24 @@ export default function ProductionPage() {
         }
         if (ev.evt === 'placed') setIndex(ev.data.i);
         if (ev.evt === 'glue_cell') {
-          setGlueStatus((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  cursor: Math.max(prev.cursor, ev.data.cell),
-                  remaining: Math.max(0, prev.total - Math.max(prev.cursor, ev.data.cell)),
-                }
-              : prev,
-          );
+          // Backend ``glue_cell`` event'i 1-indeksli cell numarası yollar
+          // (``glue.cursor + 1``). Frontend tarafında ``GlueSheetStatus.cursor``
+          // ise tüketilen hücre sayısı (0-indeksli, backend ile uyumlu).
+          // Tutarlılık için ``cell - 1`` saklayıp ``Math.max`` ile monoton tutuyoruz.
+          setGlueStatus((prev) => {
+            if (!prev) return prev;
+            const consumed = Math.max(prev.cursor, ev.data.cell - 1);
+            return {
+              ...prev,
+              cursor: consumed,
+              remaining: Math.max(0, prev.total - consumed),
+            };
+          });
+        }
+        if (ev.evt === 'glue_sheet_exhausted') {
+          // Levha bitti → backend fazı 'paused' yapıyor; UI senkron kalsın.
+          setPhase('paused');
+          appendLog('Yapışkan levha bitti — Levha sıfırla + Devam gerekli (§10).');
         }
         if (ev.evt === 'job_complete') setPhase('complete');
       },
@@ -216,7 +265,15 @@ export default function ProductionPage() {
         setRuntimeOnline(true);
         appendLog('Kontrol kanalı bağlandı');
       },
-      onClose: () => appendLog('Kontrol kanalı kapandı'),
+      onClose: () => {
+        setRuntimeOnline(false);
+        appendLog('Kontrol kanalı kapandı');
+      },
+      onError: (err) => {
+        // P1-16: onError handler yoktu; WS hatası sessizce yutuluyordu.
+        setRuntimeOnline(false);
+        appendLog(`Kontrol kanalı hatası: ${String(err)}`);
+      },
     });
     return () => controlRef.current?.close();
   }, [appendLog]);
@@ -329,8 +386,11 @@ export default function ProductionPage() {
       </header>
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
+        {/* SOL: Ana içerik alanı */}
         <main className="flex-1 min-w-0 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+          {/* Üst satır: Kamera (kompakt) + Makine kontrolü (geniş) */}
           <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-start">
+            {/* Kamera — kompakt, sol tarafta */}
             <Card className="overflow-hidden border-border/80 shadow-sm w-full lg:w-[min(300px,100%)] lg:max-w-[300px] shrink-0">
               <CardHeader className="py-2 px-3 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-xs flex items-center gap-1.5">
@@ -365,52 +425,83 @@ export default function ProductionPage() {
               </div>
             </Card>
 
-            <div className="flex-1 min-w-0 grid md:grid-cols-2 gap-3">
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader className="py-2 px-3">
-                <CardTitle className="text-xs">Makine kontrolü</CardTitle>
-              </CardHeader>
-              <CardContent className="px-3 pb-3 space-y-3">
-                <MotionPortSelector
-                  disabled={loading}
-                  onSelected={(status) => {
-                    appendLog(
-                      status.mock_hardware
-                        ? 'Motion: mock hardware'
-                        : `Motion USB: ${status.serial_port}`,
-                    );
-                  }}
-                />
-                <MotionConfigPanel
-                  disabled={loading}
-                  onSaved={() => appendLog('Motion config kaydedildi')}
-                />
-                <JobControlPanel
-                  phase={phase}
-                  disabled={loading || !runtimeOnline}
-                  onStart={() => sendCmd({ cmd: 'start' })}
-                  onPause={() => sendCmd({ cmd: 'pause' })}
-                  onResume={() => sendCmd({ cmd: 'resume' })}
-                  onStop={() => sendCmd({ cmd: 'stop' })}
-                  onEstop={() => sendCmd({ cmd: 'estop' })}
-                />
-                <ProgressDisplay phase={phase} index={index} total={total} />
-              </CardContent>
-            </Card>
+            {/* Makine kontrolü — geniş, ayrılmış kartlar */}
+            <div className="flex-1 min-w-0 grid md:grid-cols-3 gap-3">
+              <Card className="border-border/80 shadow-sm">
+                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
+                  <Usb className="w-3 h-3 text-primary" />
+                  <CardTitle className="text-[10px] font-medium">Motion Port</CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-2.5">
+                  <MotionPortSelector
+                    disabled={loading}
+                    onSelected={(status) => {
+                      appendLog(
+                        status.mock_hardware
+                          ? 'Motion: mock hardware'
+                          : `Motion USB: ${status.serial_port}`,
+                      );
+                    }}
+                  />
+                </CardContent>
+              </Card>
 
-            <Card className="border-border/80 shadow-sm flex flex-col min-h-[180px]">
-              <CardHeader className="py-2 px-3 shrink-0">
-                <CardTitle className="text-xs">Olay günlüğü</CardTitle>
-              </CardHeader>
-              <CardContent className="px-3 pb-3 flex-1 min-h-0">
-                <EventLog entries={logEntries} />
-              </CardContent>
-            </Card>
+              <Card className="border-border/80 shadow-sm">
+                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
+                  <SlidersHorizontal className="w-3 h-3 text-primary" />
+                  <CardTitle className="text-[10px] font-medium">Motion Ayarları</CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-2.5">
+                  <MotionConfigPanel
+                    disabled={loading}
+                    onSaved={() => appendLog('Motion config kaydedildi')}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/80 shadow-sm">
+                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
+                  <PlaySquare className="w-3 h-3 text-primary" />
+                  <CardTitle className="text-[10px] font-medium">İş Kontrolü</CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-2.5 space-y-2">
+                  <JobControlPanel
+                    phase={phase}
+                    disabled={loading || !runtimeOnline}
+                    onStart={() => sendCmd({ cmd: 'start' })}
+                    onPause={() => sendCmd({ cmd: 'pause' })}
+                    onResume={() => sendCmd({ cmd: 'resume' })}
+                    onStop={() => sendCmd({ cmd: 'stop' })}
+                    onEstop={() => sendCmd({ cmd: 'estop' })}
+                  />
+                  <ProgressDisplay phase={phase} index={index} total={total} />
+                </CardContent>
+              </Card>
             </div>
           </div>
+
+          {/* Alt satır: Olay günlüğü (collapsible) */}
+          <Accordion type="single" collapsible defaultValue="log">
+            <AccordionItem value="log" className="border-border/80 rounded-lg border shadow-sm bg-card">
+              <AccordionTrigger className="px-3 py-2 text-xs hover:no-underline">
+                <div className="flex items-center gap-1.5">
+                  <ScrollText className="w-3.5 h-3.5 text-primary" />
+                  <span className="font-medium">Olay Günlüğü</span>
+                  <Badge variant="secondary" className="text-[9px] h-4 px-1">
+                    {logEntries.length} kayıt
+                  </Badge>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3 pt-0">
+                <EventLog entries={logEntries} />
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </main>
 
-        <aside className="w-full lg:w-[min(420px,38vw)] shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/40 flex flex-col min-h-0 lg:max-h-none max-h-[48vh] shadow-2xl z-10">
+        {/* SAĞ: Yerleştirme tablosu + Ayarlar (Accordion) */}
+        <aside className="w-full lg:w-[min(420px,38vw)] shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/40 flex flex-col min-h-0 shadow-xl z-10">
+          {/* Planning Summary + CSV Tablosu */}
           <section className="flex flex-col min-h-0 flex-[1.15] border-b border-border/80">
             <div className="shrink-0 px-3 py-2.5 border-b border-border/60 bg-muted/20 space-y-2">
               <PlanningSummaryCard
@@ -432,9 +523,6 @@ export default function ProductionPage() {
                   </Badge>
                 )}
               </div>
-              <CardDescription className="text-[10px] mt-0.5">
-                Aktif satır vurgulanır
-              </CardDescription>
             </div>
             <div className="flex-1 min-h-0 p-3 pt-2 overflow-hidden flex flex-col">
               <PlacementJobTable
@@ -446,6 +534,7 @@ export default function ProductionPage() {
             </div>
           </section>
 
+          {/* Ayarlar — Accordion yerine Tabs */}
           <section className="flex flex-col min-h-0 flex-1">
             <div className="shrink-0 px-3 py-2 border-b border-border/60 bg-muted/20">
               <CardTitle className="text-xs flex items-center gap-1.5 mb-2">

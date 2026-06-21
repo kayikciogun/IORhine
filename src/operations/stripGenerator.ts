@@ -18,9 +18,10 @@ export interface StripCell {
   isClosed: boolean;
 }
 
-function extractLineGeometryPoints(obj: any): [number, number, number][] {
-  const startAttr = obj?.geometry?.attributes?.instanceStart;
-  const endAttr = obj?.geometry?.attributes?.instanceEnd;
+// P3-E35: ``any`` → THREE.Object3D (Line2/Group/Mesh hepsi Object3D'den türetilir).
+function extractLineGeometryPoints(obj: THREE.Object3D): [number, number, number][] {
+  const startAttr = (obj as any)?.geometry?.attributes?.instanceStart;
+  const endAttr = (obj as any)?.geometry?.attributes?.instanceEnd;
   if (!startAttr || !endAttr || typeof startAttr.count !== 'number') return [];
 
   const pts: [number, number, number][] = [];

@@ -23,8 +23,18 @@ class MotionController:
     self.driver.send("G21")
     self.driver.send("G90")
     self.driver.send("G28")
-    self.driver.send("G92 A0")
+    # C eksenini sıfırla — ``rotation_axis`` "A" veya "E" olabilir; firmware'de
+    # hangisi yapılandırıldıysa onu kullan. G92 A0 her zaman çalışmaz (E modunda
+    # Marlin A'yı ekstruder olarak yorumlayabilir).
+    rot = (self.rotation_axis or "A").upper()
+    if rot == "A":
+      self.driver.send("G92 A0")
+    else:
+      self.driver.send("G92 E0")
+      # E modunda sonraki hareketler için mutlak moda dönmek güvenli; relative
+      # dönüşler _rotate tarafından M82 + G91 ile yapılıyor.
     self.c_pos = 0.0
+    self._e_absolute = False
     self.move_to_safe_z()
 
   def move_xy(self, x_mm: float, y_mm: float, feed: float | None = None) -> None:
@@ -52,16 +62,21 @@ class MotionController:
       return
     f = settings.rotation_feed
     if self.rotation_axis == "A":
+      # Marlin A ekseni relative modda delta alır; mutlak ise delta yerine hedef açıyı yaz.
       if relative:
         self.driver.send(f"G1 A{delta_deg:.3f} F{f:.0f}")
-        self.c_pos = (self.c_pos + delta_deg) % 360
       else:
         self.driver.send(f"G1 A{delta_deg:.3f} F{f:.0f}")
+      self.c_pos = (self.c_pos + (delta_deg if relative else 0.0)) % 360
+      if not relative:
         self.c_pos = delta_deg % 360
     else:
-      if not self._e_absolute:
-        self.driver.send("M82")
-        self._e_absolute = True
+      # E ekseni: M82 mutlak, M83 relative. delta_deg her zaman bağıl dönüş;
+      # mutlak hedef istendiyse rotate_c_to() zaten delta'ya çevirdi. Bu yüzden
+      # her seferinde relative mod (M83 + G1 E<delta>) kullanıyoruz; E'yi sürekli
+      # "akümülatör" tutmak firmware tarafında güvenli.
+      self.driver.send("M83")
+      self._e_absolute = False
       self.driver.send(f"G1 E{delta_deg:.3f} F{f:.0f}")
       self.c_pos = (self.c_pos + delta_deg) % 360
 
@@ -80,7 +95,18 @@ class MotionController:
       return True
     lines = self.driver.send(f"M42 P{pin}")
     text = " ".join(lines).lower()
-    return "s255" in text or "1" in text
+    # Marlin M42 cevabı: ``Pin: <N> Value:1`` veya ``ok``. Eski/sahte firmware
+    # ``ok`` döndürebilir ama Value alanı yoksa "gripped" varsayımı yanlış olur.
+    # ``"1" in text`` çok geniş — ``ok`` (içinde '1' yok ama) veya firmware
+    # sürümü ``1.0`` gibi alt-string'leri yanlış pozitif yapar. Bu yüzden
+    # ``value:1`` (Marlin M42 formatı) veya ``s255`` (M106 echo) arıyoruz.
+    if "value:1" in text or "s255" in text:
+      return True
+    # ``value:0`` veya ``s0`` ise açıkça serbest → False.
+    if "value:0" in text or "s0" in text:
+      return False
+    # Belirsiz cevap (sadece ``ok``) → sensör okunamadı; güvenli tarafı seç.
+    return False
 
   def dwell(self, seconds: float) -> None:
     self.driver.send(f"G4 S{seconds:.3f}")
@@ -92,18 +118,36 @@ class MotionController:
     lines = self.driver.send("M114")
     text = " ".join(lines)
     x = y = z = c = 0.0
-    for axis, idx in (("X", 0), ("Y", 1), ("Z", 2), ("A", 3), ("E", 3)):
+    # M114 parser: A ve E çakışmasını önlemek için iki ayrı slot kullanılır.
+    # Kullanılan rotation ekseni (`self.rotation_axis` → "A" veya "E")
+    # sürücünün M114 çıktısında hangisinin döndüğünü belirler; diğeri yok sayılır.
+    a_val: float | None = None
+    e_val: float | None = None
+    for axis in ("X", "Y", "Z", "A", "E"):
       m = re.search(rf"{axis}:\s*([-+]?\d*\.?\d+)", text, re.I)
-      if m:
-        val = float(m.group(1))
-        if idx == 0:
-          x = val
-        elif idx == 1:
-          y = val
-        elif idx == 2:
-          z = val
-        else:
-          c = val
+      if not m:
+        continue
+      val = float(m.group(1))
+      if axis == "X":
+        x = val
+      elif axis == "Y":
+        y = val
+      elif axis == "Z":
+        z = val
+      elif axis == "A":
+        a_val = val
+      elif axis == "E":
+        e_val = val
+
+    rot_axis = (self.rotation_axis or "A").upper()
+    if rot_axis == "E" and e_val is not None:
+      c = e_val
+    elif rot_axis == "A" and a_val is not None:
+      c = a_val
+    elif a_val is not None:
+      c = a_val
+    elif e_val is not None:
+      c = e_val
     return x, y, z, c
 
   def emergency_stop(self) -> None:

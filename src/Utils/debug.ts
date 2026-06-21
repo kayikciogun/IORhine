@@ -22,19 +22,9 @@ export const debug = {
     error: (...args: AnyArgs) => { console.error(...args); }
 };
 
-// DEBUG kapalıysa global console.log/warn/group çağrılarını sustur
-// error'lar görünür kalır
-(() => {
-    if (!DEBUG) {
-        try {
-            const c: any = console as any;
-            c.log = () => {};
-            c.warn = () => {};
-            if (typeof c.group === 'function') c.group = () => {};
-            if (typeof c.groupEnd === 'function') c.groupEnd = () => {};
-        } catch (_) {
-            // ignore
-        }
-    }
-})();
+// P2-B11: Global console.log/warn/group override kaldırıldı.
+// Eski IIFE ``console.log = () => {}`` ile tüm console.log'ları susturuyordu —
+// bu, üçüncü parti kütüphanelerin (Next.js, React DevTools, error tracking)
+// log'larını da kırıyordu. ``debug.log``/``debug.warn`` zaten ``DEBUG`` gate'li;
+// global override'a gerek yok.
 

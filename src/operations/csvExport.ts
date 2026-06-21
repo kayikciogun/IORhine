@@ -1,6 +1,6 @@
 import type { PlacementOrder } from '@/types/pickplace';
 
-const CSV_HEADER = 'id,target_x,target_y,target_angle,shape_id';
+const CSV_HEADER = 'id,target_x,target_y,target_angle,shape_id,thickness';
 
 function escapeCsvField(value: string): string {
   if (/[",\n\r]/.test(value)) {
@@ -25,6 +25,7 @@ export function placementOrdersToCsv(orders: PlacementOrder[]): string {
         fmtNum(o.placeY),
         fmtNum(o.placeAngle),
         escapeCsvField(o.shapeId),
+        fmtNum(o.thickness),
       ].join(','),
     );
   }

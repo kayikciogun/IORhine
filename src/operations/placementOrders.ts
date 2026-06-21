@@ -42,6 +42,7 @@ export function buildPlacementOrders(
         placeX,
         placeY,
         placeAngle,
+        thickness: st.thickness ?? 2,
       });
       index++;
     }

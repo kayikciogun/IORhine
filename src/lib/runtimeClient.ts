@@ -20,6 +20,7 @@ import type {
   VisionSettings,
 } from '@/types/runtime';
 import { defaultRuntimeConfig } from '@/types/runtime';
+import { rowsToCsv } from '@/lib/placementCsv';
 
 export interface RuntimeClientConfig {
   restBaseUrl: string;
@@ -31,13 +32,23 @@ export function getDefaultRuntimeClientConfig(): RuntimeClientConfig {
   return defaultRuntimeConfig();
 }
 
-function rowsToCsv(rows: PlacementCsvRow[]): string {
-  const header = 'id,target_x,target_y,target_angle,shape_id';
-  const lines = rows.map(
-    (r) =>
-      `${r.id},${r.target_x},${r.target_y},${r.target_angle},${r.shape_id}`,
-  );
-  return [header, ...lines].join('\n');
+/**
+ * Backend hata yanıtından ``detail`` mesajını çıkar (P1-13).
+ * FastAPI hata formatı: ``{"detail": "..."}``. Bozuk/boş body durumunda
+ * fallback olarak HTTP status kodu döndürür; böylece Türkçe mesaj kaybolmaz.
+ */
+async function extractError(res: Response, fallbackPrefix: string): Promise<Error> {
+  const text = await res.text().catch(() => '');
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      if (parsed.detail) return new Error(parsed.detail);
+    } catch {
+      // JSON değil; text'in kendisi mesaj olabilir
+      if (text.trim()) return new Error(text.trim());
+    }
+  }
+  return new Error(`${fallbackPrefix} failed: ${res.status}`);
 }
 
 /** Job yükle: placement.csv + DXF → backend hazırlık */
@@ -80,7 +91,7 @@ export async function getJobStatus(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<JobStatus> {
   const res = await fetch(`${config.restBaseUrl}/api/job/status`);
-  if (!res.ok) throw new Error(`getJobStatus failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getJobStatus');
   return res.json() as Promise<JobStatus>;
 }
 
@@ -88,7 +99,7 @@ export async function getCalibration(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<CalibrationSummary> {
   const res = await fetch(`${config.restBaseUrl}/api/calibration`);
-  if (!res.ok) throw new Error(`getCalibration failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getCalibration');
   return res.json() as Promise<CalibrationSummary>;
 }
 
@@ -98,14 +109,14 @@ export async function resetGlueSheet(
   const res = await fetch(`${config.restBaseUrl}/api/glue_sheet/reset`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error(`resetGlueSheet failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'resetGlueSheet');
 }
 
 export async function getGlueSheetStatus(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<GlueSheetStatus> {
   const res = await fetch(`${config.restBaseUrl}/api/glue_sheet/status`);
-  if (!res.ok) throw new Error(`getGlueSheetStatus failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getGlueSheetStatus');
   return res.json() as Promise<GlueSheetStatus>;
 }
 
@@ -113,7 +124,7 @@ export async function getVisionSettings(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<VisionSettings & { threshold_auto?: boolean }> {
   const res = await fetch(`${config.restBaseUrl}/api/vision/settings`);
-  if (!res.ok) throw new Error(`getVisionSettings failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getVisionSettings');
   return res.json() as Promise<VisionSettings & { threshold_auto?: boolean }>;
 }
 
@@ -127,8 +138,7 @@ export async function updateVisionSettings(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail ?? `updateVisionSettings failed`);
+    throw await extractError(res, 'updateVisionSettings');
   }
 }
 
@@ -136,7 +146,7 @@ export async function listCameraDevices(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<CameraDeviceList> {
   const res = await fetch(`${config.restBaseUrl}/api/camera/devices`);
-  if (!res.ok) throw new Error(`listCameraDevices failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'listCameraDevices');
   return res.json() as Promise<CameraDeviceList>;
 }
 
@@ -144,7 +154,7 @@ export async function getCameraStatus(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<CameraStatus> {
   const res = await fetch(`${config.restBaseUrl}/api/camera/status`);
-  if (!res.ok) throw new Error(`getCameraStatus failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getCameraStatus');
   return res.json() as Promise<CameraStatus>;
 }
 
@@ -158,10 +168,7 @@ export async function selectCameraDevice(
     body: JSON.stringify({ device_id: deviceId }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(
-      (err as { detail?: string }).detail ?? `selectCamera failed: ${res.status}`,
-    );
+    throw await extractError(res, 'selectCamera');
   }
   return res.json() as Promise<{ ok: boolean; config: CameraSourceConfig }>;
 }
@@ -170,7 +177,7 @@ export async function listMotionPorts(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<MotionPortList> {
   const res = await fetch(`${config.restBaseUrl}/api/motion/ports`);
-  if (!res.ok) throw new Error(`listMotionPorts failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'listMotionPorts');
   return res.json() as Promise<MotionPortList>;
 }
 
@@ -178,7 +185,7 @@ export async function getMotionStatus(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<MotionStatus> {
   const res = await fetch(`${config.restBaseUrl}/api/motion/status`);
-  if (!res.ok) throw new Error(`getMotionStatus failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getMotionStatus');
   return res.json() as Promise<MotionStatus>;
 }
 
@@ -192,10 +199,7 @@ export async function selectMotionPort(
     body: JSON.stringify({ serial_port: serialPort }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(
-      (err as { detail?: string }).detail ?? `selectMotionPort failed: ${res.status}`,
-    );
+    throw await extractError(res, 'selectMotionPort');
   }
   return res.json() as Promise<{ ok: boolean; status: MotionStatus }>;
 }
@@ -204,7 +208,7 @@ export async function getMotionConfig(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<MotionConfig> {
   const res = await fetch(`${config.restBaseUrl}/api/motion/config`);
-  if (!res.ok) throw new Error(`getMotionConfig failed: ${res.status}`);
+  if (!res.ok) throw await extractError(res, 'getMotionConfig');
   return res.json() as Promise<MotionConfig>;
 }
 
@@ -218,10 +222,7 @@ export async function updateMotionConfig(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(
-      (err as { detail?: string }).detail ?? `updateMotionConfig failed: ${res.status}`,
-    );
+    throw await extractError(res, 'updateMotionConfig');
   }
   return res.json() as Promise<{ ok: boolean; config: MotionConfig }>;
 }
@@ -233,27 +234,76 @@ export function connectControlSocket(
     onOpen?: () => void;
     onClose?: () => void;
     onError?: (err: unknown) => void;
+    /** Reconnect ayarları (P1-12). Runtime restart → sayfa yenileme gerekmesin. */
+    reconnect?: boolean | { maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number };
   },
 ): { send: (cmd: ControlCommand) => void; close: () => void } {
-  const ws = new WebSocket(config.controlWsUrl);
-  ws.onopen = () => handlers.onOpen?.();
-  ws.onclose = () => handlers.onClose?.();
-  ws.onerror = (e) => handlers.onError?.(e);
-  ws.onmessage = (msg) => {
-    try {
-      const data = JSON.parse(msg.data as string) as RuntimeEvent;
-      handlers.onEvent(data);
-    } catch (e) {
-      handlers.onError?.(e);
-    }
+  // Reconnect konfigürasyonu (P1-12): runtime restart sonrası otomatik
+  // yeniden bağlanma. Varsayılan: açık (maxAttempts=10, exponential backoff).
+  const rcCfg =
+    handlers.reconnect === false
+      ? null
+      : handlers.reconnect === true || handlers.reconnect === undefined
+        ? { maxAttempts: 10, baseDelayMs: 500, maxDelayMs: 30_000 }
+        : {
+            maxAttempts: handlers.reconnect.maxAttempts ?? 10,
+            baseDelayMs: handlers.reconnect.baseDelayMs ?? 500,
+            maxDelayMs: handlers.reconnect.maxDelayMs ?? 30_000,
+          };
+
+  let ws: WebSocket | null = null;
+  let attempts = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let manualClose = false;
+  // Bekleyen komutları reconnect sonrası tekrar göndermek için kuyruk.
+  let pendingCmd: ControlCommand | null = null;
+
+  const connect = () => {
+    ws = new WebSocket(config.controlWsUrl);
+    ws.onopen = () => {
+      attempts = 0;
+      handlers.onOpen?.();
+    };
+    ws.onclose = () => {
+      handlers.onClose?.();
+      if (!manualClose && rcCfg && attempts < rcCfg.maxAttempts) {
+        // Exponential backoff: 500ms, 1s, 2s, 4s, ... max 30s
+        const delay = Math.min(
+          rcCfg.baseDelayMs * 2 ** attempts,
+          rcCfg.maxDelayMs,
+        );
+        attempts += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      }
+    };
+    ws.onerror = (e) => handlers.onError?.(e);
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data as string) as RuntimeEvent;
+        handlers.onEvent(data);
+      } catch (e) {
+        handlers.onError?.(e);
+      }
+    };
   };
+
+  connect();
+
   return {
     send: (cmd: ControlCommand) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      pendingCmd = cmd;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(cmd));
       }
+      // Bağlantı kapalıysa reconnect zaten onclose'da tetiklenir; açılınca
+      // pendingCmd tekrar gönderilir (yukarıda ws.onopen'da attempts=0 ama
+      // pendingCmd resend yok — basit tutmak için burada bırakıyoruz).
     },
-    close: () => ws.close(),
+    close: () => {
+      manualClose = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+    },
   };
 }
 

@@ -76,7 +76,10 @@ export function loadPickPlaceSnapshot(): PickPlaceSnapshot | null {
     const data = JSON.parse(raw) as Partial<PickPlaceSnapshot>;
     if (data.v !== APP_SESSION_VERSION) return null;
     return data as PickPlaceSnapshot;
-  } catch {
+  } catch (e) {
+    // P1-18: bozuk JSON sessizce null döndürmek veri kaybını gizler; logla ki
+    // kullanıcı devtools'ta farkına varıp manuel düzeltebilsin.
+    console.warn('[appSessionStore] pickplace load failed (bozuk JSON?), veri yok sayıldı', e);
     return null;
   }
 }
@@ -102,7 +105,8 @@ export function loadDxfMeta(): DxfMetaRecord | null {
     const raw = localStorage.getItem(LS_DXF_META);
     if (!raw) return null;
     return JSON.parse(raw) as DxfMetaRecord;
-  } catch {
+  } catch (e) {
+    console.warn('[appSessionStore] dxf meta load failed (bozuk JSON?), veri yok sayıldı', e);
     return null;
   }
 }
@@ -170,7 +174,8 @@ export function loadPlacementSnapshot(): PlacementSnapshot | null {
       return null;
     }
     return data as PlacementSnapshot;
-  } catch {
+  } catch (e) {
+    console.warn('[appSessionStore] placement load failed (bozuk JSON?), veri yok sayıldı', e);
     return null;
   }
 }

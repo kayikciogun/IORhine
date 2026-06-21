@@ -1,5 +1,6 @@
 'use client'
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import type * as THREE from 'three';
 import { loadDxfBlob, saveDxfMeta, loadDxfMeta, clearDxfBlob } from '@/lib/appSessionStore';
 
 interface ModelTransform {
@@ -13,15 +14,17 @@ interface DxfContextType {
   dxfSessionHydrated: boolean;
   selectedDxfFile: File | null;
   setSelectedDxfFile: (file: File | null) => void;
-  parsedDxf: any;
-  setParsedDxf: (parsed: any) => void;
-  mainGroup: any;
-  setMainGroup: (group: any) => void;
+  // P3-E34: ``any`` → proper types. ``parsedDxf`` ezdxf parse çıktısı
+  // (dynamic structure); ``DxfDocument`` tipi yok, ``unknown`` + cast daha güvenli.
+  parsedDxf: unknown;
+  setParsedDxf: (parsed: unknown) => void;
+  mainGroup: THREE.Object3D | null;
+  setMainGroup: (group: THREE.Object3D | null) => void;
   modelTransform: ModelTransform | null;
   setModelTransform: (transform: ModelTransform | null) => void;
   // Scene erişimi (window.dxfScene yerine)
-  dxfScene: any | null;
-  setDxfScene: (scene: any) => void;
+  dxfScene: THREE.Scene | null;
+  setDxfScene: (scene: THREE.Scene | null) => void;
   /** DXF'i ve IndexedDB oturumunu kaldır; taş ayarları (PickPlace) kalır. Yükleme ekranına döner. */
   clearDxfSession: () => void;
 }
@@ -31,10 +34,10 @@ const DxfContext = createContext<DxfContextType | undefined>(undefined);
 export const DxfProvider = ({ children }: { children: React.ReactNode }) => {
   const [dxfSessionHydrated, setDxfSessionHydrated] = useState(false);
   const [selectedDxfFile, setSelectedDxfFile] = useState<File | null>(null);
-  const [parsedDxf, setParsedDxf] = useState<any>(null);
-  const [mainGroup, setMainGroup] = useState<any>(null);
+  const [parsedDxf, setParsedDxf] = useState<unknown>(null);
+  const [mainGroup, setMainGroup] = useState<THREE.Object3D | null>(null);
   const [modelTransform, setModelTransform] = useState<ModelTransform | null>(null);
-  const [dxfScene, setDxfScene] = useState<any | null>(null);
+  const [dxfScene, setDxfScene] = useState<THREE.Scene | null>(null);
 
   useEffect(() => {
     const meta = loadDxfMeta();

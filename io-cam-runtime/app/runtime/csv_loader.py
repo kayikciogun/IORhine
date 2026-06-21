@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass
 
 
@@ -12,27 +13,50 @@ class PlacementRow:
     target_y: float
     target_angle: float
     shape_id: str
+    thickness: float = 0.0
 
 
 def parse_placement_csv(text: str) -> list[PlacementRow]:
     reader = csv.DictReader(io.StringIO(text.strip()))
     rows: list[PlacementRow] = []
     for r in reader:
-        rows.append(
-            PlacementRow(
-                id=int(r["id"]),
-                target_x=float(r["target_x"]),
-                target_y=float(r["target_y"]),
-                target_angle=float(r["target_angle"]),
-                shape_id=str(r["shape_id"]).strip(),
+        # P2-A2: thickness negatif/NaN/Inf → Z negatif → kafa çarpar. Ayrıca
+        # CSV kolon eksikliği ``KeyError`` fırlatır; row context ile sarmala.
+        try:
+            raw_thickness = r.get("thickness")
+            thickness = (
+                float(raw_thickness) if raw_thickness not in (None, "") else 0.0
             )
-        )
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"row {r.get('id')!r}: invalid thickness {raw_thickness!r}"
+            ) from e
+        if not math.isfinite(thickness) or thickness < 0:
+            raise ValueError(
+                f"row {r.get('id')!r}: thickness must be >= 0 and finite, got {thickness}"
+            )
+        try:
+            rows.append(
+                PlacementRow(
+                    id=int(r["id"]),
+                    target_x=float(r["target_x"]),
+                    target_y=float(r["target_y"]),
+                    target_angle=float(r["target_angle"]),
+                    shape_id=str(r["shape_id"]).strip(),
+                    thickness=thickness,
+                )
+            )
+        except KeyError as e:
+            raise ValueError(
+                f"row {r.get('id')!r}: missing required column {e}"
+            ) from e
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"row {r.get('id')!r}: {e}") from e
     return rows
 
 
-def validate_single_shape(rows: list[PlacementRow]) -> str:
-    """Tek shape_id zorunluluğu (eski API)."""
-    return resolve_template_shape_id(rows, strict=True)
+# P3-D29: ``validate_single_shape`` kaldırıldı — dead code (only test çağırıyordu).
+# ``resolve_template_shape_id(rows, strict=True)`` ile aynı işlevi yapar.
 
 
 def resolve_template_shape_id(rows: list[PlacementRow], *, strict: bool = False) -> str:

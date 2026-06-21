@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { usePickPlace } from '@/contexts/PickPlaceContext';
 import { useDxf } from '@/contexts/DxfContext';
 import { Button } from '@/components/ui/button';
-import { Download, FileSpreadsheet, ChevronDown, Factory, Loader2 } from 'lucide-react';
+import { Download, FileSpreadsheet, ChevronDown, Factory, Loader2, AlertTriangle } from 'lucide-react';
 import { buildPlacementOrders } from '@/operations/placementOrders';
 import { placementOrdersToCsv, downloadPlacementCsv } from '@/operations/csvExport';
 import { syncPlacementSnapshotFromScene } from '@/lib/placementSession';
@@ -29,8 +29,13 @@ export default function ExportPanel() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [stripTick, setStripTick] = useState(0);
+  // Hydration fix: localStorage'dan okunan veriler (placementSnap, glueSnap)
+  // server'da null, client'ta dolu olabilir → csvText/gluePreviewDone farkı
+  // hydration mismatch yaratır. Mount sonrası render için ``mounted`` guard.
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const onStrip = () => setStripTick((t) => t + 1);
     const onPlacement = () => {
       const snap = loadPlacementSnapshot();
@@ -54,15 +59,18 @@ export default function ExportPanel() {
 
   const stoneCount = useMemo(() => countAssignedStones(stoneTypes), [stoneTypes]);
 
-  const glueSnap = useMemo(() => loadGlueStripSnapshot(), [stripTick, stoneCount]);
+  const glueSnap = useMemo(
+    () => (mounted ? loadGlueStripSnapshot() : null),
+    [mounted, stripTick, stoneCount],
+  );
   const gluePreviewDone = useMemo(
     () => glueSnap != null && glueSnap.cells.length === stoneCount && stoneCount > 0,
     [glueSnap, stoneCount],
   );
 
   const placementSnap = useMemo(
-    () => loadPlacementSnapshot(),
-    [orders, stripTick],
+    () => (mounted ? loadPlacementSnapshot() : null),
+    [mounted, orders, stripTick],
   );
   const csvPreviewDone = useMemo(
     () =>
@@ -141,90 +149,104 @@ export default function ExportPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background/50">
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-3 pr-0.5">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-0.5">
         <div>
-          <h2 className="text-base font-semibold flex items-center gap-1.5 mb-1">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5 mb-1">
             <FileSpreadsheet className="w-4 h-4 text-primary" />
             Dışa aktar ve gönder
           </h2>
-          <p className="text-[10px] text-muted-foreground leading-snug">
-            Yukarıdaki adımları sırayla tamamlayın; son adımda tüm veriler Production&apos;a aktarılır.
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Adimlari tamamlayin; son asamada Production'a aktarilir.
           </p>
         </div>
 
-        <div className="rounded-md border border-border bg-muted/15 p-2">
+        <div className="rounded-md border border-border bg-muted/15 p-2.5">
           <PipelineChecklist steps={pipelineSteps} />
         </div>
 
         {orders && (
-          <div className="flex gap-3 text-xs text-muted-foreground bg-muted/20 px-2 py-1.5 rounded-md border border-border">
-            <span>{orders.length} CSV satırı</span>
+          <div className="flex gap-3 text-xs text-muted-foreground bg-muted/20 px-3 py-2 rounded-md border border-border">
+            <span>{orders.length} CSV satiri</span>
             {gluePreviewDone && glueSnap && (
-              <span>{glueSnap.cells.length} yapışkan karo</span>
+              <span>{glueSnap.cells.length} yapiskan karo</span>
             )}
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-8 text-xs"
-            onClick={handleGenerate}
-            disabled={stoneCount === 0 || !dxfScene}
-          >
-            4. CSV önizle
-          </Button>
-          <Button
-            size="sm"
-            className="h-8 text-xs gap-1.5"
-            onClick={handleDownload}
-            disabled={stoneCount === 0 || !dxfScene}
-          >
-            <Download className="w-3.5 h-3.5" />
-            CSV indir
-          </Button>
-        </div>
+        {/* Buton grubu: sirali hiyerarsi */}
+        <div className="space-y-2">
+          {/* 1. hazirlik butonlari */}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-8 text-xs flex-1"
+              onClick={handleGenerate}
+              disabled={stoneCount === 0 || !dxfScene}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />
+              4. CSV onizle
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              onClick={handleDownload}
+              disabled={stoneCount === 0 || !dxfScene}
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              CSV Indir
+            </Button>
+          </div>
 
-        <Button
-          size="sm"
-          className="h-9 w-full text-xs gap-1.5"
-          variant="default"
-          onClick={() => void handleSendToProduction()}
-          disabled={!canSend}
-        >
-          {sending ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Factory className="w-3.5 h-3.5" />
+          {/* 2. primary action */}
+          <Button
+            size="sm"
+            className="h-10 w-full text-xs gap-1.5 font-semibold"
+            variant="default"
+            onClick={() => void handleSendToProduction()}
+            disabled={!canSend}
+          >
+            {sending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Factory className="w-4 h-4" />
+            )}
+            5. Makineye gonder
+          </Button>
+
+          {/* Uyari banner */}
+          {!gluePreviewDone && stoneCount > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                Gondermeden once Glue Levha bolumunde <strong>Uret</strong> ile sablonu onizleyin.
+              </span>
+            </div>
           )}
-          5. Makineye gönder
-        </Button>
 
-        {sendError && (
-          <p className="text-[11px] text-destructive">{sendError}</p>
-        )}
-
-        {!gluePreviewDone && stoneCount > 0 && (
-          <p className="text-[10px] text-amber-600 dark:text-amber-400">
-            Göndermeden önce Glue Levha → <strong>Üret</strong> ile şablonu önizleyin.
-          </p>
-        )}
+          {sendError && (
+            <p className="text-[11px] text-destructive flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              {sendError}
+            </p>
+          )}
+        </div>
 
         {csvText && (
           <div className="mt-1">
             <button
               type="button"
-              className="text-xs text-muted-foreground flex items-center gap-1 w-full mb-1"
+              className="text-xs text-muted-foreground flex items-center gap-1 w-full mb-1 hover:text-foreground transition-colors"
               onClick={() => setShowPreview((s) => !s)}
             >
               <ChevronDown
                 className={`w-3 h-3 transition-transform ${showPreview ? 'rotate-180' : ''}`}
               />
-              CSV önizleme
+              CSV onizleme
             </button>
             {showPreview && (
-              <pre className="text-[10px] leading-[1.4] font-mono bg-muted/30 border border-border rounded-md p-2 overflow-auto max-h-[160px] custom-scrollbar whitespace-pre">
+              <pre className="text-[11px] leading-[1.5] font-mono bg-muted/30 border border-border rounded-md p-3 overflow-auto max-h-[260px] custom-scrollbar whitespace-pre">
                 {csvText}
               </pre>
             )}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,7 +30,8 @@ class AppServices:
     runner: JobRunner | None = None
     template: StoneTemplate | None = None
     rows: list[PlacementRow] = field(default_factory=list)
-    dxf_bytes: bytes | None = None
+    # P3-D31: ``dxf_bytes`` kaldırıldı (write-only). ``ws_clients`` hâlâ
+    # kullanılıyor (ws.py append/remove) — yanlışlıkla kaldırılmıştı, geri eklendi.
     ws_clients: list[Any] = field(default_factory=list)
 
     def ensure_glue(self) -> GlueSheet:
@@ -55,6 +57,12 @@ class AppServices:
         return self.camera
 
     def init_hardware(self) -> None:
+        """Sync backward-compat wrapper — mock path veya sync serial için.
+
+        P2-A9: Yeni kod ``await init_hardware_async()`` kullanmalı; bu sync
+        versiyon mock-hardware veya test yolunda kalır. Gerçek serial open
+        + 2 sn boot bekleme event loop'u bloklar.
+        """
         mock = settings.mock_hardware
         self.ensure_camera()
         if self.motion is None:
@@ -69,12 +77,52 @@ class AppServices:
         if self.glue is None:
             self.glue = GlueSheet.from_calibration(settings.calibration_dir, settings)
 
+    async def init_hardware_async(self) -> None:
+        """P2-A9: Async hardware init — serial open + 2 sn boot bekleme'yi
+        ``asyncio.to_thread`` + ``await asyncio.sleep`` ile bloklamadan yapar.
+        ``load_job`` zaten async; bu versiyonu tercih et.
+        """
+        mock = settings.mock_hardware
+        self.ensure_camera()
+        if self.motion is None:
+            if mock:
+                driver = GcodeDriver.from_serial(MockSerial())
+            else:
+                saved_port = load_serial_port(settings.calibration_dir)
+                if saved_port:
+                    settings.serial_port = saved_port
+                # P2-A9: sync GcodeDriver(port, baud) yerine async factory.
+                driver = await GcodeDriver.open(
+                    settings.serial_port, settings.serial_baud
+                )
+            self.motion = MotionController(driver)
+        if self.glue is None:
+            self.glue = GlueSheet.from_calibration(settings.calibration_dir, settings)
+
     async def load_job(self, csv_text: str, dxf_bytes: bytes | None) -> dict:
+        # Önceki job_runner varsa güvenli durdur: aksi halde yeni job yüklenirken
+        # eski _run_loop hâlâ çalışıyor olabilir ve aynı hareket/seri port'u
+        # paylaşır → donma veya çapraz komut karışması. stop() await'ı blocking
+        # I/O'da takılırsa timeout/cancel ile sınırla.
+        if self.runner is not None:
+            try:
+                await asyncio.wait_for(self.runner.stop(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                # Görev hâlâ yaşıyorsa manuel iptal et
+                t = getattr(self.runner, "_task", None)
+                if t is not None and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            self.runner = None
+
         self.ctx.state.phase = JobPhase.PREPARING
         try:
             self.rows = parse_placement_csv(csv_text)
             template_shape_id = resolve_template_shape_id(self.rows)
-            self.dxf_bytes = dxf_bytes
+            # P3-D31: dxf_bytes field kaldırıldı; sadece local param kullan.
             if dxf_bytes:
                 self.template = build_template_from_dxf_bytes(template_shape_id, dxf_bytes)
             else:
@@ -89,10 +137,17 @@ class AppServices:
             if not self.template:
                 raise ValueError(f"Could not build template for shape_id={template_shape_id}")
             if not self.motion:
-                self.init_hardware()
+                await self.init_hardware_async()
             if self.glue:
                 self.glue.reset()
-            assert self.motion and self.glue and self.camera and self.template
+            # ``assert`` üretimde ``python -O`` ile silinir; bu yüzden açık
+            # ``RuntimeError`` kullanıyoruz (P1-8).
+            if not (self.motion and self.glue and self.camera and self.template):
+                raise RuntimeError(
+                    "Hardware hazırlığı eksik: "
+                    f"motion={self.motion is not None}, glue={self.glue is not None}, "
+                    f"camera={self.camera is not None}, template={self.template is not None}"
+                )
             job_id = str(uuid.uuid4())[:8]
             self.ctx.state.job_id = job_id
             self.runner = JobRunner(

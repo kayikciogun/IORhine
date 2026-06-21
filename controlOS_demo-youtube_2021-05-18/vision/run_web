@@ -1,3 +1,0 @@
-#!/bin/sh
-SCRIPT=$(dirname $(realpath $0))
-exec "$SCRIPT/.venv/bin/python3" "$SCRIPT/web_angle.py" "$@"

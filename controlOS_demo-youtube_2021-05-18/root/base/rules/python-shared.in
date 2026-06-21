@@ -1,6 +1,0 @@
-## SECTION=project_specific
-
-config PYTHON_SHARED
-	bool
-	select PYTHON3
-	prompt "python-shared"

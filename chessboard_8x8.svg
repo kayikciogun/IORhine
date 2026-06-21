@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="300.0mm" height="300.0mm" viewBox="0 0 300.0 300.0">
+  <rect width="100%" height="100%" fill="white"/>
+  <g transform="translate(50.0,50.0)">
+    <rect x="25.0" y="0.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="75.0" y="0.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="125.0" y="0.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="175.0" y="0.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="0.0" y="25.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="50.0" y="25.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="100.0" y="25.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="150.0" y="25.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="25.0" y="50.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="75.0" y="50.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="125.0" y="50.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="175.0" y="50.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="0.0" y="75.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="50.0" y="75.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="100.0" y="75.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="150.0" y="75.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="25.0" y="100.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="75.0" y="100.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="125.0" y="100.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="175.0" y="100.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="0.0" y="125.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="50.0" y="125.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="100.0" y="125.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="150.0" y="125.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="25.0" y="150.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="75.0" y="150.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="125.0" y="150.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="175.0" y="150.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="0.0" y="175.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="50.0" y="175.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="100.0" y="175.0" width="25.0" height="25.0" fill="black"/>
+    <rect x="150.0" y="175.0" width="25.0" height="25.0" fill="black"/>
+  </g>
+  <text x="150.0" y="298.0" text-anchor="middle" font-size="3" fill="black" font-family="monospace">
+    8x8 squares | 25.0mm | inner corners: 7x7
+  </text>
+</svg>

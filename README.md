@@ -1,6 +1,6 @@
 # IO-CAM Pick & Place — Mimari & Runtime Pipeline
 
-> **Durum:** v0.7.1 (20 May 2026)  
+> **Durum:** v0.7.2 (27 May 2026)  
 > **Kapsam:** DXF tabanlı taş yerleştirme; Next.js planlama + yapışkan ızgarası; Python runtime (vision pick + motion + glue sheet).  
 > **Kaynak kod:** `feat/io-cam-runtime-production` dalı (`io-cam-runtime/`, `src/`, `scripts/start.sh`).  
 > **Sürüm geçmişi:** [§0 — Changelog](#sürüm-geçmişi-changelog)
@@ -56,6 +56,8 @@
 | `pick_sheet` modülü | ❌ kaldırıldı | — |
 | Konveyör yazılım kontrolü | ❌ kaldırıldı | Operatör elle besler |
 | Vakum sensörü (gerçek okuma) | ⚠️ | `IO_CAM_VACUUM_SENSOR_PIN` + `M42` (§12); yoksa her zaman `True` |
+| Taş kalınlığı (`thickness`) → CSV → Z offset | ✅ | `StoneTypePanel` → `PlacementOrder` → `job_runner` (§7, §14) |
+| Chessboard SVG generator (A4 print-ready) | ✅ | `scripts/generate_chessboard_svg.py` (§17) |
 
 **Çalıştırma**
 
@@ -72,7 +74,7 @@
 | Sürüm | Tarih | Özet |
 |-------|-------|------|
 | **v0.7.1** | 20 May 2026 | Referans el kitabı netleştirmesi (kod değişikliği yok): §2 çoklu `shape_id` / tek vision şablonu; §5.1 `calibration/` dosya kategorileri; §7 `IO_CAM_SETTLING_MS`; §10 `GlueSheetExhausted` reset + WS `resume`; §12 `M42` vakum sensörü sınırı; çapraz referanslar. |
-| **v0.7** | May 2026 | Mimari doküman kodla hizalandı: `io-cam-runtime`, motion API/UI, Production akışı, REST/WS tabloları, `pick_sheet` ve konveyör API kaldırıldı. |
+| **v0.7.2** | 27 May 2026 | Taş kalınlığı (`thickness`): planlama `StoneType` → CSV → runtime PICK/GLUE/PLACE Z offset. `generate_chessboard_svg.py` ile A4 print-ready kalibrasyon deseni üretimi. `shortest_delta_c` ROTATE akışı netleştirme (§7, §14, §17). |
 | **v0.6** | May 2026 | İlk bütünleşik mimari: vision-only pick, PICK→ROTATE→GLUE→PLACE, planlama pipeline, glue strip v3, Production glue önizleme. |
 
 Yeni **minor** veya **point** sürümde bu tabloya 2–3 satır ekleyin; üst başlıktaki sürüm + tarihi güncelleyin; §18 [Tamamlanan](#tamamlanan-kümülatif--kod) listesini senkron tutun.
@@ -291,7 +293,7 @@ LOOP: i = 0 .. total-1
     │  stone = nearest_stone(stones, head_xy)
     │
     │  vacuum_pick_retries+1 deneme:
-    │     safe_z → move_xy → sync → move_z(pick_z)
+    │     safe_z → move_xy → sync → move_z(pick_z + hedef.thickness)
     │     → vacuum_on → dwell → safe_z
     │     if not vacuum_gripped(): vacuum_off; retry
     │  başarısız: error vacuum_pick_failed; continue (aynı i)
@@ -304,12 +306,12 @@ LOOP: i = 0 .. total-1
     │  gx, gy, gz = glue.next_cell()
     │  emit glue_cell { cell, x, y }
     │  GlueSheetExhausted → glue_sheet_exhausted, pause; operatör reset+resume (§10)
-    │  move_xy → sync → move_z(gz) → dwell(glue_dwell_s) → safe_z
+    │  move_xy → sync → move_z(gz + hedef.thickness) → dwell(glue_dwell_s) → safe_z
     │  (vakum açık, taş kafada)
 
     ┌─ PLACE ────────────────────────────────────
     │  rx, ry = fabric_to_robot(target_x, target_y, offset)
-    │  move_xy → sync → move_z(place_z)
+    │  move_xy → sync → move_z(place_z + hedef.thickness)
     │  vacuum_off → dwell → safe_z
     │  rotate_c_to(0); sync
 
@@ -523,9 +525,9 @@ Standart Marlin’de `M42` dijital **çıkış** pinidir; ham `M42 P{n}` genelde
 ## 14. CSV Formatı
 
 ```csv
-id,target_x,target_y,target_angle,shape_id
-0,125.5,80.2,45.0,1A2B
-1,130.1,82.0,0.0,432_seg_0
+id,target_x,target_y,target_angle,shape_id,thickness
+0,125.5,80.2,45.0,1A2B,2.0
+1,130.1,82.0,0.0,432_seg_0,5.0
 ```
 
 | Sütun | Açıklama |
@@ -533,6 +535,7 @@ id,target_x,target_y,target_angle,shape_id
 | `target_x`, `target_y` | Kumaş mm (`fabric_offset` ile robota) |
 | `target_angle` | Kumaştaki kontur yönü — ROTATE hedefi |
 | `shape_id` | DXF handle; bkz. §2 — çoklu id olabilir, vision **tek şablon** (ilk satır) |
+| `thickness` | Taş kalınlığı mm — PICK/GLUE/PLACE Z offset (`pick_z + thickness` vb.) |
 
 **§2 ile ilişki:** Her satır farklı `shape_id` taşıyabilir (planlama export’u); pick yine de §2’deki tek şablonla yapılır. Tüm taşlar aynı kontur varsayılır.
 
@@ -630,15 +633,21 @@ io-cam-runtime/
 │   │   ├── gcode_driver.py
 │   │   ├── controller.py
 │   │   ├── config_store.py
-│   │   └── serial_config.py
+│   │   ├── serial_config.py
+│   │   └── mock_driver.py          # P2-C26: MockSerial (test/mock hardware)
 │   ├── vision/
 │   │   ├── detector.py
 │   │   ├── template_loader.py
-│   │   └── fast_detect.py
+│   │   ├── fast_detect.py
+│   │   └── pca_angle.py             # P2-C26: PCA-based stone angle (vision [0,360))
 │   └── runtime/
 │       ├── job_runner.py
 │       ├── csv_loader.py
-│       └── camera.py
+│       ├── camera.py
+│       ├── camera_sources.py       # P2-C26: USB/V4L2 device enumeration
+│       ├── events.py               # P2-C26: EventBus (concurrent broadcast)
+│       ├── state.py                 # P2-C26: JobPhase + RuntimeContext
+│       └── calibration.py           # P2-C26: homography + fabric offset
 ├── calibration/          # persist (volume mount)
 ├── tests/
 ├── Dockerfile
@@ -660,11 +669,24 @@ io-cam-runtime/
 | `IO_CAM_VACUUM_PICK_RETRIES` | `2` | |
 | `NEXT_PUBLIC_RUNTIME_URL` | `http://127.0.0.1:8000` | Frontend |
 
+> `motion_config.json` UI/API alanları (`safe_z`, `pick_z`, `glue_z`, `place_z`, `xy_feed`, `z_feed`, **rotation_feed**, `vacuum_on_dwell_s`, `vacuum_off_dwell_s`, `glue_dwell_s`, `rotation_axis`) ortam değişkeni olarak değil, dosya + endpoint üzerinden override edilir; varsayılanlar `app/config/motion.json` içindedir.
+
 Örnek: `io-cam-runtime/.env.example`, `.env.local.example`
 
 ### 17.4 Başlatıcı
 
-`scripts/start.sh` — venv, `pip install -e io-cam-runtime[dev]`, uvicorn + `npm run dev`, `--mock` / `--install` seçenekleri.
+`scripts/start.sh` — venv, `pip install -e io-cam-runtime[dev]`, uvicorn + `npm run dev`.
+
+| Seçenek | Açıklama |
+|---------|----------|
+| `--mock` | `IO_CAM_MOCK_HARDWARE=1` ile başlat (port/kamera yok) |
+| `--install` | Bağımlılıkları yeniden kur (venv + `pip install -e`) |
+| `--no-install` | `pip install` adımını atla |
+| `--skip-runtime` | FastAPI/uvicorn'u başlatma (yalnızca frontend) |
+| `--skip-frontend` | Next.js'i başlatma (yalnızca runtime) |
+| `-h`, `--help` | Yardım mesajı |
+
+`scripts/generate_chessboard_svg.py` — A4 print-ready satranç tahtası SVG üretimi (kalibrasyon için). Args: `--cols`, `--rows`, `--square` (mm), `--margin`. OpenCV "inner corner" sayısı = kare sayısı − 1.
 
 ---
 
@@ -694,6 +716,13 @@ io-cam-runtime/
 
 - [x] Referans el kitabı seviyesi; bilinen belirsizlikler (M42, glue pause UX) kayıtlı
 - [x] §2 / §14 `shape_id` tutarlılığı; §5.1 kalibrasyon vs donanım seçimi ayrımı
+
+**Taş kalınlığı & kalibrasyon araçları (v0.7.2)**
+
+- [x] `StoneType.thickness` — planlama panelde kalınlık (mm) girişi
+- [x] CSV `thickness` kolonu; `PlacementOrder` + `PlacementCsvRow` + `PlacementRow` güncellemesi
+- [x] `job_runner`: PICK/GLUE/PLACE Z += `hedef.thickness` (taş boyuna göre derinlik)
+- [x] `scripts/generate_chessboard_svg.py` — A4 print-ready satranç tahtası üretimi (kurulum için)
 
 ---
 

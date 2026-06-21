@@ -7,11 +7,14 @@ const useStandalone = process.env.NEXT_STANDALONE !== '0';
 
 const nextConfig: NextConfig = {
   /* config options here */
+  // Strict mod: gerçek tip hataları build'i kırsın. ``ignoreBuildErrors`` ve
+  // ``ignoreDuringBuilds`` CI'da gizli hataları maskeleyebilir; yerel geliştirme
+  // sırasında ``NEXT_IGNORE_BUILD_ERRORS=1`` ile geçici olarak bypass edilebilir.
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: process.env.NEXT_IGNORE_BUILD_ERRORS === '1',
   },
   eslint: {
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: process.env.NEXT_IGNORE_BUILD_ERRORS === '1',
   },
 
   // Production security headers

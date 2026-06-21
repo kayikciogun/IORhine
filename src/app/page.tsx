@@ -7,7 +7,6 @@ import { useSelection } from '@/components/dxf-viewer/useSelection';
 import { usePickPlace } from '@/contexts/PickPlaceContext';
 import { debug } from '@/Utils/debug';
 import { clearAppSession } from '@/lib/appSessionStore';
-import Link from 'next/link';
 import { FileX2, FolderKanban, Factory } from 'lucide-react';
 import initCavc, { on_load as cavcOnLoad } from '../../public/wasm/v0aigcode_cavalier_ffi.js';
 import StoneTypePanel from '@/components/pick-place/StoneTypePanel';
@@ -37,7 +36,7 @@ export default function PickPlaceHome() {
         if (!cancelled) console.error('[WASM] Cavalier Contours init hatası:', e);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true };
   }, []);
 
   const handleDxfFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -115,33 +114,33 @@ export default function PickPlaceHome() {
       </div>
 
       {/* Sağ Panel: Ayarlar ve İşlemler */}
-      <div className="w-[360px] xs:w-[400px] shrink-0 bg-card border-l border-border h-full flex flex-col shadow-2xl z-20">
-        <div className="p-3 border-b border-border bg-muted/30 flex justify-between items-center gap-2">
-          <h1 className="text-base font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+      <div className="w-[420px] lg:w-[460px] shrink-0 bg-card border-l border-border h-full flex flex-col shadow-xl z-20">
+        <div className="p-3.5 border-b border-border bg-muted/30 flex justify-between items-center gap-3">
+          <h1 className="text-base font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent tracking-tight">
             IO-CAM Pick & Place
           </h1>
           <span
-            className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[10px] text-muted-foreground"
+            className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border px-2.5 py-1 text-[10px] text-muted-foreground"
             title="Production’a geçmek için altta «5. Makineye gönder» kullanın"
           >
             <Factory className="w-3 h-3 opacity-50" />
             Production
           </span>
         </div>
-        
-        <div className="flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto p-2 custom-scrollbar">
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 custom-scrollbar">
           {/* Taş Tipi Yönetimi */}
-          <div className="rounded-lg border border-border bg-background p-3 shadow-sm flex flex-col shrink-0 min-h-[100px] max-h-[60vh]">
+          <div className="rounded-lg border border-border bg-background p-3.5 shadow-sm flex flex-col shrink-0">
             <StoneTypePanel />
           </div>
-          
+
           {/* Dizim Şablonu */}
-          <div className="rounded-lg border border-border bg-background p-3 shadow-sm flex flex-col shrink-0 min-h-[250px]">
+          <div className="rounded-lg border border-border bg-background p-3.5 shadow-sm flex flex-col shrink-0">
             <StripPreview />
           </div>
 
           {/* CSV dışa aktarma */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-background p-3 shadow-sm">
+          <div className="flex-1 flex flex-col rounded-lg border border-border bg-background p-3.5 shadow-sm min-h-0 overflow-hidden">
             <ExportPanel />
           </div>
         </div>
