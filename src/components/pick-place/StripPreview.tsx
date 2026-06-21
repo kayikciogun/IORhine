@@ -140,10 +140,10 @@ export default function StripPreview() {
         <div>
           <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <LayoutGrid className="w-4 h-4 text-primary" />
-            3. Glue Levha
+            Glue Levha (opsiyonel)
           </h2>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            <strong>Uret</strong> ile onizleyin; gonderim alttaki 5. adimda.
+            İsterseniz önizleyin; gönderimde otomatik üretilir.
           </p>
         </div>
         <div className="flex gap-2 shrink-0">

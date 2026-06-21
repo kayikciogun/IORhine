@@ -19,8 +19,6 @@ import {
 export type PipelineStepId =
   | 'dxf'
   | 'stones'
-  | 'glue_preview'
-  | 'csv'
   | 'send';
 
 export type PipelineStep = {
@@ -50,8 +48,6 @@ export function countAssignedStones(stoneTypes: StoneType[]): number {
 export function getPipelineSteps(
   hasDxf: boolean,
   stoneCount: number,
-  gluePreviewDone: boolean,
-  csvPreviewDone: boolean,
 ): PipelineStep[] {
   return [
     {
@@ -65,18 +61,6 @@ export function getPipelineSteps(
       label: 'Taş tipi oluşturuldu ve kontur atandı',
       done: stoneCount > 0,
       hint: stoneCount > 0 ? `${stoneCount} kontur` : 'Taş tipi ekleyip DXF’ten atayın',
-    },
-    {
-      id: 'glue_preview',
-      label: 'Yapışkan şablonu üretildi ve önizlendi',
-      done: gluePreviewDone,
-      hint: gluePreviewDone ? undefined : 'Glue Levha → Üret',
-    },
-    {
-      id: 'csv',
-      label: 'Yerleştirme CSV hazır',
-      done: csvPreviewDone,
-      hint: csvPreviewDone ? undefined : 'Dışa aktar → Önizle (veya doğrudan gönder)',
     },
     {
       id: 'send',

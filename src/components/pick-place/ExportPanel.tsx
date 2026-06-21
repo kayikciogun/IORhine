@@ -9,7 +9,6 @@ import { Download, FileSpreadsheet, ChevronDown, Factory, Loader2, AlertTriangle
 import { buildPlacementOrders } from '@/operations/placementOrders';
 import { placementOrdersToCsv, downloadPlacementCsv } from '@/operations/csvExport';
 import { syncPlacementSnapshotFromScene } from '@/lib/placementSession';
-import { loadGlueStripSnapshot } from '@/lib/glueStripSync';
 import { loadPlacementSnapshot } from '@/lib/appSessionStore';
 import {
   countAssignedStones,
@@ -59,30 +58,14 @@ export default function ExportPanel() {
 
   const stoneCount = useMemo(() => countAssignedStones(stoneTypes), [stoneTypes]);
 
-  const glueSnap = useMemo(
-    () => (mounted ? loadGlueStripSnapshot() : null),
-    [mounted, stripTick, stoneCount],
-  );
-  const gluePreviewDone = useMemo(
-    () => glueSnap != null && glueSnap.cells.length === stoneCount && stoneCount > 0,
-    [glueSnap, stoneCount],
-  );
-
   const placementSnap = useMemo(
     () => (mounted ? loadPlacementSnapshot() : null),
     [mounted, orders, stripTick],
   );
-  const csvPreviewDone = useMemo(
-    () =>
-      (orders != null && orders.length > 0) ||
-      (placementSnap != null && placementSnap.rows.length === stoneCount && stoneCount > 0),
-    [orders, placementSnap, stoneCount],
-  );
 
   const pipelineSteps = useMemo(
-    () =>
-      getPipelineSteps(!!dxfScene, stoneCount, gluePreviewDone, csvPreviewDone),
-    [dxfScene, stoneCount, gluePreviewDone, csvPreviewDone],
+    () => getPipelineSteps(!!dxfScene, stoneCount),
+    [dxfScene, stoneCount],
   );
 
   const canSend = !!dxfScene && stoneCount > 0 && !sending;
@@ -129,8 +112,8 @@ export default function ExportPanel() {
       stoneTypes,
       config: pickPlaceConfig,
       fileName: selectedDxfFile?.name,
-      requireGluePreview: true,
-      gluePreviewDone,
+      requireGluePreview: false,
+      gluePreviewDone: false,
     });
     setSending(false);
     if (!result.ok) {
@@ -143,7 +126,6 @@ export default function ExportPanel() {
     stoneTypes,
     pickPlaceConfig,
     selectedDxfFile?.name,
-    gluePreviewDone,
     router,
   ]);
 
@@ -167,42 +149,15 @@ export default function ExportPanel() {
         {orders && (
           <div className="flex gap-3 text-xs text-muted-foreground bg-muted/20 px-3 py-2 rounded-md border border-border">
             <span>{orders.length} CSV satiri</span>
-            {gluePreviewDone && glueSnap && (
-              <span>{glueSnap.cells.length} yapiskan karo</span>
-            )}
           </div>
         )}
 
-        {/* Buton grubu: sirali hiyerarsi */}
+        {/* Buton grubu: tek ana aksiyon + opsiyonel */}
         <div className="space-y-2">
-          {/* 1. hazirlik butonlari */}
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              className="h-8 text-xs flex-1"
-              onClick={handleGenerate}
-              disabled={stoneCount === 0 || !dxfScene}
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />
-              4. CSV onizle
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs"
-              onClick={handleDownload}
-              disabled={stoneCount === 0 || !dxfScene}
-            >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              CSV Indir
-            </Button>
-          </div>
-
-          {/* 2. primary action */}
+          {/* Primary action: Makineye gonder */}
           <Button
             size="sm"
-            className="h-10 w-full text-xs gap-1.5 font-semibold"
+            className="h-11 w-full text-sm gap-1.5 font-semibold"
             variant="default"
             onClick={() => void handleSendToProduction()}
             disabled={!canSend}
@@ -212,18 +167,32 @@ export default function ExportPanel() {
             ) : (
               <Factory className="w-4 h-4" />
             )}
-            5. Makineye gonder
+            Makineye gonder
           </Button>
 
-          {/* Uyari banner */}
-          {!gluePreviewDone && stoneCount > 0 && (
-            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>
-                Gondermeden once Glue Levha bolumunde <strong>Uret</strong> ile sablonu onizleyin.
-              </span>
-            </div>
-          )}
+          {/* Opsiyonel: CSV onizle / indir */}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-xs flex-1 text-muted-foreground"
+              onClick={handleGenerate}
+              disabled={stoneCount === 0 || !dxfScene}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />
+              CSV onizle
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-xs text-muted-foreground"
+              onClick={handleDownload}
+              disabled={stoneCount === 0 || !dxfScene}
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              CSV indir
+            </Button>
+          </div>
 
           {sendError && (
             <p className="text-[11px] text-destructive flex items-center gap-1">

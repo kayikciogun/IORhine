@@ -58,15 +58,29 @@ export default function StoneTypePanel() {
   }, [editName, editColor, editThickness, updateStoneType]);
 
   const handleAssignContours = useCallback(() => {
-    if (!activeStoneTypeId || totalSelected === 0) return;
+    if (totalSelected === 0) return;
     const handles: string[] = [];
     selectedObjectsSet.forEach((obj: any) => {
       const handle = obj.userData?.handle || obj.uuid;
       if (handle) handles.push(handle);
     });
-    assignContoursToType(activeStoneTypeId, handles);
+    // Auto-create stone type if no active type — UX: tek adımda ata
+    let targetId = activeStoneTypeId;
+    if (!targetId) {
+      const n = stoneTypes.length + 1;
+      targetId = `stone_${Date.now()}`;
+      addStoneType({
+        id: targetId,
+        name: `Taş ${n}`,
+        color: PRESET_COLORS[(n - 1) % PRESET_COLORS.length],
+        contourIds: [],
+        thickness: 2.0,
+      });
+      setActiveStoneTypeId(targetId);
+    }
+    assignContoursToType(targetId, handles);
     clearSelection();
-  }, [activeStoneTypeId, totalSelected, selectedObjectsSet, assignContoursToType, clearSelection]);
+  }, [activeStoneTypeId, totalSelected, selectedObjectsSet, assignContoursToType, clearSelection, stoneTypes.length, addStoneType, setActiveStoneTypeId]);
 
   const handleUnassignContours = useCallback(() => {
     if (totalSelected === 0) return;
@@ -133,7 +147,9 @@ export default function StoneTypePanel() {
         <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300">
           <CheckCircle2 className="w-3.5 h-3.5" />
           <span className="font-medium">{totalSelected} obje seçildi</span>
-          <span className="text-muted-foreground ml-auto">Atama icin bir tas tipi secin</span>
+          <span className="text-muted-foreground ml-auto">
+            {activeStoneTypeId ? 'Aktif tipe ata' : '«Ata» ile otomatik taş tipi oluştur'}
+          </span>
         </div>
       )}
 
@@ -247,36 +263,33 @@ export default function StoneTypePanel() {
             );
           })}
 
-          {/* Aktif tip icin atama butonlari (tüm tipler altinda degil, aktif secildiiginde fixed gibi) */}
-          {activeStoneTypeId && stoneTypes.find((s) => s.id === activeStoneTypeId) && (
+          {/* Atama butonlari — aktif tip yoksa otomatik olusturulur */}
+          {totalSelected > 0 && (
             <div className="sticky bottom-0 bg-background/95 backdrop-blur border border-border rounded-lg p-2.5 mt-2 shadow-sm">
               <div className="flex gap-2">
                 <Button
                   size="sm"
                   className="flex-1 h-8 text-xs"
-                  variant={totalSelected > 0 ? 'default' : 'secondary'}
+                  variant="default"
                   onClick={handleAssignContours}
-                  disabled={totalSelected === 0}
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                  {totalSelected > 0 ? `${totalSelected} konturu ata` : 'Kontur ata'}
+                  {activeStoneTypeId
+                    ? `${totalSelected} konturu ata`
+                    : `${totalSelected} konturu ata (yeni tip)`}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  className="flex-1 h-8 text-xs"
-                  onClick={handleUnassignContours}
-                  disabled={totalSelected === 0}
-                >
-                  <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                  Kaldır
-                </Button>
+                {activeStoneTypeId && (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="flex-1 h-8 text-xs"
+                    onClick={handleUnassignContours}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                    Kaldır
+                  </Button>
+                )}
               </div>
-              {totalSelected === 0 && (
-                <p className="text-[10px] text-muted-foreground text-center mt-1.5">
-                  Atama icin DXF uzerinden kontur secin.
-                </p>
-              )}
             </div>
           )}
         </div>

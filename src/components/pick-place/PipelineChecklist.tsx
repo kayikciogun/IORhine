@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, FileText, Gem, Grid3x3, FileSpreadsheet, Send } from 'lucide-react';
+import { Check, FileText, Gem, Send } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { PipelineStep, PipelineStepId } from '@/lib/planningPipeline';
 
@@ -12,8 +12,6 @@ interface Props {
 const stepMeta: Record<PipelineStepId, { icon: LucideIcon; label: string }> = {
   dxf: { icon: FileText, label: 'DXF Yükle' },
   stones: { icon: Gem, label: 'Taş Atama' },
-  glue_preview: { icon: Grid3x3, label: 'Glue Şablon' },
-  csv: { icon: FileSpreadsheet, label: 'CSV Hazırla' },
   send: { icon: Send, label: 'Makineye Gönder' },
 };
 
