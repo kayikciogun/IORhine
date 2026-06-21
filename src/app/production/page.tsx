@@ -43,7 +43,6 @@ import GlueSheetStatusPanel from '@/components/production/GlueSheetStatus';
 import CalibrationPanel from '@/components/production/CalibrationPanel';
 import VisionTunePanel from '@/components/production/VisionTunePanel';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
@@ -61,13 +60,6 @@ import {
   Factory,
   Video,
   ListOrdered,
-  Settings2,
-  ChevronDown,
-  Eye,
-  EyeOff,
-  Usb,
-  SlidersHorizontal,
-  PlaySquare,
   ScrollText,
 } from 'lucide-react';
 
@@ -337,9 +329,10 @@ export default function ProductionPage() {
   const [settingsTab, setSettingsTab] = useState('vision');
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-gradient-to-b from-background via-background to-muted/30">
-      <header className="shrink-0 z-30 border-b border-border/80 bg-background/85 backdrop-blur-md">
-        <div className="px-4 py-2.5 flex flex-wrap items-center gap-3">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      {/* === Header — minimal, tek satır === */}
+      <header className="shrink-0 z-30 border-b border-border/80 bg-background/95 backdrop-blur-md">
+        <div className="px-4 py-2 flex items-center gap-3">
           <Link
             href="/"
             className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -347,24 +340,26 @@ export default function ProductionPage() {
             <ArrowLeft className="w-3.5 h-3.5" />
             Planlama
           </Link>
-          <div className="flex items-center gap-2 min-w-0">
-            <Factory className="w-4 h-4 text-primary shrink-0" />
-            <h1 className="text-sm font-semibold leading-tight">Production</h1>
-          </div>
-          <Badge variant={phaseBadgeVariant} className="text-[10px]">
+          <div className="h-4 w-px bg-border" />
+          <Factory className="w-4 h-4 text-primary" />
+          <h1 className="text-sm font-semibold">Production</h1>
+          <Badge variant={phaseBadgeVariant} className="text-[10px] ml-1">
             {PHASE_LABELS[phase]}
           </Badge>
           {runtimeOnline != null && (
-            <Badge variant={runtimeOnline ? 'outline' : 'destructive'} className="text-[10px]">
-              {runtimeOnline ? 'Çevrimiçi' : 'Kapalı'}
+            <Badge
+              variant={runtimeOnline ? 'outline' : 'destructive'}
+              className="text-[10px]"
+            >
+              {runtimeOnline ? '● Çevrimiçi' : '○ Kapalı'}
             </Badge>
           )}
+          <div className="flex-1" />
           {jobId && (
             <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[120px]">
               {jobId}
             </span>
           )}
-          <div className="flex-1" />
           <Button
             size="sm"
             variant="ghost"
@@ -385,125 +380,77 @@ export default function ProductionPage() {
         </div>
       </header>
 
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-        {/* SOL: Ana içerik alanı */}
-        <main className="flex-1 min-w-0 overflow-y-auto p-3 space-y-3 custom-scrollbar">
-          {/* Üst satır: Kamera (kompakt) + Makine kontrolü (geniş) */}
-          <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-start">
-            {/* Kamera — kompakt, sol tarafta */}
-            <Card className="overflow-hidden border-border/80 shadow-sm w-full lg:w-[min(300px,100%)] lg:max-w-[300px] shrink-0">
-              <CardHeader className="py-2 px-3 flex flex-row items-center justify-between space-y-0">
-                <CardTitle className="text-xs flex items-center gap-1.5">
-                  <Video className="w-3.5 h-3.5 text-primary" />
-                  Kamera
-                </CardTitle>
-                <div className="flex items-center gap-1.5">
-                  <Switch id="cam" checked={cameraOn} onCheckedChange={setCameraOn} className="scale-90" />
-                  <Label htmlFor="cam" className="text-[10px] cursor-pointer">
-                    {cameraOn ? 'Açık' : 'Kapalı'}
-                  </Label>
-                </div>
-              </CardHeader>
-              <CardContent className="p-2 flex justify-center bg-black/90">
-                <LiveCameraView
-                  enabled={cameraOn}
-                  compact
-                  streamKey={cameraStreamKey}
-                  onFrame={handleCameraFrame}
-                  onCameraError={handleCameraError}
-                  className="rounded-md border-0"
-                />
-              </CardContent>
-              <div className="px-3 py-2 border-t border-border/60">
-                <CameraDeviceSelector
-                  disabled={loading}
-                  onSelected={(cfg: CameraSourceConfig) => {
-                    setCameraStreamKey(`${cfg.kind}:${cfg.source_id}:${Date.now()}`);
-                    appendLog(`Kamera: ${cfg.kind} / ${cfg.source_id}`);
-                  }}
-                />
+      {/* === Ana alan: 2 kolon === */}
+      <div className="flex flex-1 min-h-0">
+        {/* SOL: Kamera (büyük) + İş kontrolü (altta) */}
+        <main className="flex-1 min-w-0 flex flex-col min-h-0 border-r border-border/60">
+          {/* Kamera — büyük, odak */}
+          <div className="relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
+            <LiveCameraView
+              enabled={cameraOn}
+              streamKey={cameraStreamKey}
+              onFrame={handleCameraFrame}
+              onCameraError={handleCameraError}
+              className="w-full h-full object-contain"
+            />
+            {/* Kamera overlay: kapalı/kapak */}
+            {!cameraOn && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/30 text-muted-foreground">
+                <Video className="w-8 h-8 mb-2 opacity-50" />
+                <p className="text-xs">Kamera kapalı</p>
               </div>
-            </Card>
-
-            {/* Makine kontrolü — geniş, ayrılmış kartlar */}
-            <div className="flex-1 min-w-0 grid md:grid-cols-3 gap-3">
-              <Card className="border-border/80 shadow-sm">
-                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
-                  <Usb className="w-3 h-3 text-primary" />
-                  <CardTitle className="text-[10px] font-medium">Motion Port</CardTitle>
-                </CardHeader>
-                <CardContent className="px-3 pb-2.5">
-                  <MotionPortSelector
-                    disabled={loading}
-                    onSelected={(status) => {
-                      appendLog(
-                        status.mock_hardware
-                          ? 'Motion: mock hardware'
-                          : `Motion USB: ${status.serial_port}`,
-                      );
-                    }}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border/80 shadow-sm">
-                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
-                  <SlidersHorizontal className="w-3 h-3 text-primary" />
-                  <CardTitle className="text-[10px] font-medium">Motion Ayarları</CardTitle>
-                </CardHeader>
-                <CardContent className="px-3 pb-2.5">
-                  <MotionConfigPanel
-                    disabled={loading}
-                    onSaved={() => appendLog('Motion config kaydedildi')}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border/80 shadow-sm">
-                <CardHeader className="py-1.5 px-3 flex flex-row items-center gap-1.5 space-y-0">
-                  <PlaySquare className="w-3 h-3 text-primary" />
-                  <CardTitle className="text-[10px] font-medium">İş Kontrolü</CardTitle>
-                </CardHeader>
-                <CardContent className="px-3 pb-2.5 space-y-2">
-                  <JobControlPanel
-                    phase={phase}
-                    disabled={loading || !runtimeOnline}
-                    onStart={() => sendCmd({ cmd: 'start' })}
-                    onPause={() => sendCmd({ cmd: 'pause' })}
-                    onResume={() => sendCmd({ cmd: 'resume' })}
-                    onStop={() => sendCmd({ cmd: 'stop' })}
-                    onEstop={() => sendCmd({ cmd: 'estop' })}
-                  />
-                  <ProgressDisplay phase={phase} index={index} total={total} />
-                </CardContent>
-              </Card>
-            </div>
+            )}
+            {/* FPS overlay (sağ üst) */}
+            {cameraOn && (
+              <CameraHud
+                phase={phase}
+                index={index}
+                total={total}
+                detectedCount={detectedObjects.length}
+              />
+            )}
           </div>
 
-          {/* Alt satır: Olay günlüğü (collapsible) */}
-          <Accordion type="single" collapsible defaultValue="log">
-            <AccordionItem value="log" className="border-border/80 rounded-lg border shadow-sm bg-card">
-              <AccordionTrigger className="px-3 py-2 text-xs hover:no-underline">
-                <div className="flex items-center gap-1.5">
-                  <ScrollText className="w-3.5 h-3.5 text-primary" />
-                  <span className="font-medium">Olay Günlüğü</span>
-                  <Badge variant="secondary" className="text-[9px] h-4 px-1">
-                    {logEntries.length} kayıt
-                  </Badge>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="px-3 pb-3 pt-0">
-                <EventLog entries={logEntries} />
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
+          {/* Kamera alt araç çubuğu: cihaz seç + aç/kapat */}
+          <div className="shrink-0 border-t border-border/60 bg-card/40 px-3 py-2 flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch id="cam" checked={cameraOn} onCheckedChange={setCameraOn} className="scale-90" />
+              <Label htmlFor="cam" className="text-[11px] cursor-pointer">
+                {cameraOn ? 'Kamera açık' : 'Kamera kapalı'}
+              </Label>
+            </div>
+            <div className="h-4 w-px bg-border" />
+            <CameraDeviceSelector
+              disabled={loading}
+              onSelected={(cfg: CameraSourceConfig) => {
+                setCameraStreamKey(`${cfg.kind}:${cfg.source_id}:${Date.now()}`);
+                appendLog(`Kamera: ${cfg.kind} / ${cfg.source_id}`);
+              }}
+            />
+          </div>
+
+          {/* İş kontrolü — büyük, belirgin, alt panel */}
+          <div className="shrink-0 border-t border-border/60 bg-card/60 p-3 space-y-3">
+            {/* İlerleme — büyük rakam */}
+            <ProgressDisplay phase={phase} index={index} total={total} />
+            {/* Kontrol butonları — tek satır, belirgin */}
+            <JobControlPanel
+              phase={phase}
+              disabled={loading || !runtimeOnline}
+              onStart={() => sendCmd({ cmd: 'start' })}
+              onPause={() => sendCmd({ cmd: 'pause' })}
+              onResume={() => sendCmd({ cmd: 'resume' })}
+              onStop={() => sendCmd({ cmd: 'stop' })}
+              onEstop={() => sendCmd({ cmd: 'estop' })}
+            />
+          </div>
         </main>
 
-        {/* SAĞ: Yerleştirme tablosu + Ayarlar (Accordion) */}
-        <aside className="w-full lg:w-[min(420px,38vw)] shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/40 flex flex-col min-h-0 shadow-xl z-10">
-          {/* Planning Summary + CSV Tablosu */}
-          <section className="flex flex-col min-h-0 flex-[1.15] border-b border-border/80">
-            <div className="shrink-0 px-3 py-2.5 border-b border-border/60 bg-muted/20 space-y-2">
+        {/* SAĞ: Yerleştirme listesi + Ayarlar (tab) */}
+        <aside className="w-full lg:w-[min(400px,36vw)] shrink-0 flex flex-col min-h-0 bg-card/30">
+          {/* Üst: Planlama özeti + yerleştirme tablosu */}
+          <section className="flex flex-col min-h-0 flex-[1.2] border-b border-border/60">
+            <div className="shrink-0 px-3 py-2.5 border-b border-border/60 bg-muted/20">
               <PlanningSummaryCard
                 bundle={planningBundle}
                 glueStatus={glueStatus}
@@ -512,11 +459,11 @@ export default function ProductionPage() {
                   selectedDxfFile?.name ?? loadPlacementSnapshot()?.fileName
                 }
               />
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-xs flex items-center gap-1.5">
+              <div className="flex items-center justify-between gap-2 mt-2">
+                <span className="text-xs flex items-center gap-1.5 font-medium">
                   <ListOrdered className="w-3.5 h-3.5 text-primary" />
-                  Yerleştirme (CSV)
-                </CardTitle>
+                  Yerleştirme
+                </span>
                 {csvRows.length > 0 && (
                   <Badge variant="secondary" className="text-[10px]">
                     {csvRows.length} satır
@@ -524,7 +471,7 @@ export default function ProductionPage() {
                 )}
               </div>
             </div>
-            <div className="flex-1 min-h-0 p-3 pt-2 overflow-hidden flex flex-col">
+            <div className="flex-1 min-h-0 p-2 overflow-hidden flex flex-col">
               <PlacementJobTable
                 rows={csvRows}
                 activeIndex={index}
@@ -534,15 +481,11 @@ export default function ProductionPage() {
             </div>
           </section>
 
-          {/* Ayarlar — Accordion yerine Tabs */}
+          {/* Alt: Ayarlar (tab) + Olay günlüğü (collapsible) */}
           <section className="flex flex-col min-h-0 flex-1">
             <div className="shrink-0 px-3 py-2 border-b border-border/60 bg-muted/20">
-              <CardTitle className="text-xs flex items-center gap-1.5 mb-2">
-                <Settings2 className="w-3.5 h-3.5 text-primary" />
-                Ayarlar
-              </CardTitle>
               <Tabs value={settingsTab} onValueChange={setSettingsTab}>
-                <TabsList className="h-8 w-full grid grid-cols-3 bg-muted/50">
+                <TabsList className="h-8 w-full grid grid-cols-4 bg-muted/50">
                   <TabsTrigger value="vision" className="text-[10px] h-6 px-1">
                     Görüntü
                   </TabsTrigger>
@@ -550,12 +493,15 @@ export default function ProductionPage() {
                     Yapışkan
                   </TabsTrigger>
                   <TabsTrigger value="cal" className="text-[10px] h-6 px-1">
-                    Kal.
+                    Kalibrasyon
+                  </TabsTrigger>
+                  <TabsTrigger value="motion" className="text-[10px] h-6 px-1">
+                    Motion
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 custom-scrollbar">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 custom-scrollbar space-y-3">
               {settingsTab === 'vision' && (
                 <VisionTunePanel objects={detectedObjects} />
               )}
@@ -577,10 +523,88 @@ export default function ProductionPage() {
               {settingsTab === 'cal' && (
                 <CalibrationPanel summary={calSummary} onRefresh={refreshAux} />
               )}
+              {settingsTab === 'motion' && (
+                <div className="space-y-3">
+                  <MotionPortSelector
+                    disabled={loading}
+                    onSelected={(status) => {
+                      appendLog(
+                        status.mock_hardware
+                          ? 'Motion: mock hardware'
+                          : `Motion USB: ${status.serial_port}`,
+                      );
+                    }}
+                  />
+                  <MotionConfigPanel
+                    disabled={loading}
+                    onSaved={() => appendLog('Motion config kaydedildi')}
+                  />
+                </div>
+              )}
             </div>
           </section>
+
+          {/* Olay günlüğü — en altta, collapsible */}
+          <Accordion type="single" collapsible className="shrink-0 border-t border-border/60">
+            <AccordionItem value="log" className="border-0">
+              <AccordionTrigger className="px-3 py-2 text-xs hover:no-underline">
+                <div className="flex items-center gap-1.5">
+                  <ScrollText className="w-3.5 h-3.5 text-primary" />
+                  <span className="font-medium">Olay Günlüğü</span>
+                  <Badge variant="secondary" className="text-[9px] h-4 px-1">
+                    {logEntries.length}
+                  </Badge>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3 pt-0 max-h-[200px] overflow-y-auto">
+                <EventLog entries={logEntries} />
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Kamera HUD overlay — faz + ilerleme + detect sayısı sağ üstte.
+ * Kullanıcı kamera görüntüsüne odaklanırken durum bilgisi overlay'de.
+ */
+function CameraHud({
+  phase,
+  index,
+  total,
+  detectedCount,
+}: {
+  phase: JobPhase;
+  index: number;
+  total: number;
+  detectedCount: number;
+}) {
+  const phaseColor =
+    phase === 'running'
+      ? 'bg-green-500/80'
+      : phase === 'error'
+        ? 'bg-red-500/80'
+        : phase === 'paused'
+          ? 'bg-amber-500/80'
+          : 'bg-black/60';
+  return (
+    <div className="absolute top-2 right-2 flex flex-col gap-1.5 items-end pointer-events-none">
+      <Badge className={`${phaseColor} text-white text-[10px] border-0`}>
+        {PHASE_LABELS[phase]}
+      </Badge>
+      {total > 0 && (
+        <Badge className="bg-black/60 text-white text-[10px] border-0 tabular-nums">
+          {index} / {total}
+        </Badge>
+      )}
+      {detectedCount > 0 && (
+        <Badge className="bg-black/60 text-white text-[10px] border-0">
+          {detectedCount} taş
+        </Badge>
+      )}
     </div>
   );
 }
