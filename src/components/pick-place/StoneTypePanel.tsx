@@ -57,30 +57,43 @@ export default function StoneTypePanel() {
     setEditingStoneId(null);
   }, [editName, editColor, editThickness, updateStoneType]);
 
-  const handleAssignContours = useCallback(() => {
-    if (totalSelected === 0) return;
-    const handles: string[] = [];
-    selectedObjectsSet.forEach((obj: any) => {
-      const handle = obj.userData?.handle || obj.uuid;
-      if (handle) handles.push(handle);
-    });
-    // Auto-create stone type if no active type — UX: tek adımda ata
-    let targetId = activeStoneTypeId;
-    if (!targetId) {
-      const n = stoneTypes.length + 1;
-      targetId = `stone_${Date.now()}`;
-      addStoneType({
-        id: targetId,
-        name: `Taş ${n}`,
-        color: PRESET_COLORS[(n - 1) % PRESET_COLORS.length],
-        contourIds: [],
-        thickness: 2.0,
+  const handleAssignContours = useCallback(
+    (mode: 'active' | 'new' = 'active') => {
+      if (totalSelected === 0) return;
+      const handles: string[] = [];
+      selectedObjectsSet.forEach((obj: any) => {
+        const handle = obj.userData?.handle || obj.uuid;
+        if (handle) handles.push(handle);
       });
-      setActiveStoneTypeId(targetId);
-    }
-    assignContoursToType(targetId, handles);
-    clearSelection();
-  }, [activeStoneTypeId, totalSelected, selectedObjectsSet, assignContoursToType, clearSelection, stoneTypes.length, addStoneType, setActiveStoneTypeId]);
+      // mode='new' → her zaman yeni tip oluştur
+      // mode='active' → aktif tip yoksa yine yeni oluştur, varsa aktif tipe ekle
+      let targetId = activeStoneTypeId;
+      if (mode === 'new' || !targetId) {
+        const n = stoneTypes.length + 1;
+        targetId = `stone_${Date.now()}`;
+        addStoneType({
+          id: targetId,
+          name: `Taş ${n}`,
+          color: PRESET_COLORS[(n - 1) % PRESET_COLORS.length],
+          contourIds: [],
+          thickness: 2.0,
+        });
+        setActiveStoneTypeId(targetId);
+      }
+      assignContoursToType(targetId, handles);
+      clearSelection();
+    },
+    [
+      activeStoneTypeId,
+      totalSelected,
+      selectedObjectsSet,
+      assignContoursToType,
+      clearSelection,
+      stoneTypes.length,
+      addStoneType,
+      setActiveStoneTypeId,
+    ],
+  );
 
   const handleUnassignContours = useCallback(() => {
     if (totalSelected === 0) return;
@@ -263,33 +276,54 @@ export default function StoneTypePanel() {
             );
           })}
 
-          {/* Atama butonlari — aktif tip yoksa otomatik olusturulur */}
+          {/* Atama butonlari — iki net seçenek */}
           {totalSelected > 0 && (
-            <div className="sticky bottom-0 bg-background/95 backdrop-blur border border-border rounded-lg p-2.5 mt-2 shadow-sm">
+            <div className="sticky bottom-0 bg-background/95 backdrop-blur border border-border rounded-lg p-2.5 mt-2 shadow-sm space-y-2">
+              {/* Aktif tip bilgisi */}
+              {activeStoneTypeId && (
+                <div className="text-[11px] text-muted-foreground text-center">
+                  Aktif tip:{' '}
+                  <span className="font-medium text-foreground">
+                    {stoneTypes.find((s) => s.id === activeStoneTypeId)?.name ?? '—'}
+                  </span>
+                </div>
+              )}
               <div className="flex gap-2">
+                {/* Aktif tipe ekle (veya ilk tipi oluştur) */}
                 <Button
                   size="sm"
-                  className="flex-1 h-8 text-xs"
+                  className="flex-1 h-9 text-xs"
                   variant="default"
-                  onClick={handleAssignContours}
+                  onClick={() => handleAssignContours('active')}
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
                   {activeStoneTypeId
-                    ? `${totalSelected} konturu ata`
-                    : `${totalSelected} konturu ata (yeni tip)`}
+                    ? `${totalSelected} kontürü aktif tipe ekle`
+                    : `${totalSelected} kontürü ata (Taş 1)`}
                 </Button>
-                {activeStoneTypeId && (
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    className="flex-1 h-8 text-xs"
-                    onClick={handleUnassignContours}
-                  >
-                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                    Kaldır
-                  </Button>
-                )}
+                {/* Yeni taş tipi oluştur */}
+                <Button
+                  size="sm"
+                  className="flex-1 h-9 text-xs"
+                  variant="secondary"
+                  onClick={() => handleAssignContours('new')}
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1.5" />
+                  + Yeni Taş Tipi
+                </Button>
               </div>
+              {/* Kaldır — sadece aktif tip varsa */}
+              {activeStoneTypeId && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="w-full h-7 text-xs text-muted-foreground"
+                  onClick={handleUnassignContours}
+                >
+                  <Trash2 className="w-3 h-3 mr-1" />
+                  Seçili kontürleri kaldır
+                </Button>
+              )}
             </div>
           )}
         </div>

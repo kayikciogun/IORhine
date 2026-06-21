@@ -190,15 +190,15 @@ export default function StripPreview() {
         </div>
       </div>
 
-      {/* Stale CTA */}
+      {/* Stale CTA — opsiyonel olduğu için bilgi amaçlı */}
       {isStale && cells.length > 0 && (
-        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-          <span className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2">
+          <span className="text-xs text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
             <RefreshCw className="w-3 h-3" />
-            Ayarlar degisti — "Uret" ile yenileyin.
+            Ayarlar değişti — önizlemeyi yenileyin (gönderimde otomatik üretilir).
           </span>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleGenerate}>
-            Yeniden Uret
+            Önizle
           </Button>
         </div>
       )}
