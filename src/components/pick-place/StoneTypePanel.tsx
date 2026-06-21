@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { usePickPlace } from '../../contexts/PickPlaceContext';
 import { useSelection } from '../dxf-viewer/useSelection';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Plus, Trash2, CheckCircle2, PaintBucket, Tag, Edit2, X } from 'lucide-react';
+import {
+  Plus, Trash2, CheckCircle2, PaintBucket, Tag, Edit2, Gem,
+} from 'lucide-react';
 import { StoneType } from '@/types/pickplace';
 
 const PRESET_COLORS = [
@@ -14,14 +16,38 @@ const PRESET_COLORS = [
   '#06b6d4', '#3b82f6', '#6366f1', '#a855f7', '#ec4899',
 ];
 
+const COLOR_NAMES: Record<string, string> = {
+  '#ef4444': 'Kırmızı', '#f97316': 'Turuncu', '#f59e0b': 'Amber',
+  '#84cc16': 'Lime', '#22c55e': 'Yeşil', '#06b6d4': 'Camgöbeği',
+  '#3b82f6': 'Mavi', '#6366f1': 'Indigo', '#a855f7': 'Mor', '#ec4899': 'Pembe',
+};
+
+/**
+ * Yeni UX felsefesi (2026-06):
+ * - "Aktif tip" kavramı atama için kaldırıldı — kafa karıştırıcıydı.
+ * - Akış: DXF'ten kontür seç → altta "Renk seç + Ata" paneli → renk seç → Ata.
+ * - Atama her zaman yeni taş tipi oluşturur (Taş 1, Taş 2, ...).
+ * - Mevcut taş tipleri üstte kart listesi — düzenle/sil.
+ * - "Mevcut tipe ekle" opsiyonel: kart üzerindeki + butonu (hover'da görünür).
+ */
 export default function StoneTypePanel() {
-  const { stoneTypes, activeStoneTypeId, setActiveStoneTypeId, addStoneType, removeStoneType, updateStoneType, assignContoursToType, reorderStoneTypes, unassignContours } = usePickPlace();
+  const {
+    stoneTypes,
+    activeStoneTypeId,
+    setActiveStoneTypeId,
+    addStoneType,
+    removeStoneType,
+    updateStoneType,
+    assignContoursToType,
+    unassignContours,
+  } = usePickPlace();
   const { selectedObjectsSet, clearSelection } = useSelection();
 
-  const [isAdding, setIsAdding] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
+  // Atama paneli durumu
+  const [assignColor, setAssignColor] = useState<string>(PRESET_COLORS[0]);
+  const [assignName, setAssignName] = useState<string>('');
 
+  // Düzenleme durumu
   const [editingStoneId, setEditingStoneId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState('');
@@ -29,19 +55,14 @@ export default function StoneTypePanel() {
 
   const totalSelected = selectedObjectsSet.size;
 
-  const handleAddNew = useCallback(() => {
-    if (!newName.trim()) return;
-    addStoneType({
-      id: `stone_${Date.now()}`,
-      name: newName,
-      color: newColor,
-      contourIds: [],
-      thickness: 2.0,
-    });
-    setIsAdding(false);
-    setNewName('');
-    setNewColor(PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)]);
-  }, [newName, newColor, addStoneType]);
+  // Bir sonraki taş numarası
+  const nextStoneNum = useMemo(() => stoneTypes.length + 1, [stoneTypes.length]);
+
+  // Önerilen isim (kullanıcı boş bırakırsa)
+  const suggestedName = useMemo(() => {
+    if (assignName.trim()) return assignName.trim();
+    return `Taş ${nextStoneNum}`;
+  }, [assignName, nextStoneNum]);
 
   const startEdit = useCallback((stone: StoneType) => {
     setEditingStoneId(stone.id);
@@ -53,47 +74,56 @@ export default function StoneTypePanel() {
   const saveEdit = useCallback((id: string) => {
     if (!editName.trim()) return;
     const t = parseFloat(editThickness.replace(',', '.'));
-    updateStoneType(id, { name: editName, color: editColor, thickness: Number.isFinite(t) ? t : 2 });
+    updateStoneType(id, {
+      name: editName,
+      color: editColor,
+      thickness: Number.isFinite(t) ? t : 2,
+    });
     setEditingStoneId(null);
   }, [editName, editColor, editThickness, updateStoneType]);
 
-  const handleAssignContours = useCallback(
-    (mode: 'active' | 'new' = 'active') => {
-      if (totalSelected === 0) return;
-      const handles: string[] = [];
-      selectedObjectsSet.forEach((obj: any) => {
-        const handle = obj.userData?.handle || obj.uuid;
-        if (handle) handles.push(handle);
-      });
-      // mode='new' → her zaman yeni tip oluştur
-      // mode='active' → aktif tip yoksa yine yeni oluştur, varsa aktif tipe ekle
-      let targetId = activeStoneTypeId;
-      if (mode === 'new' || !targetId) {
-        const n = stoneTypes.length + 1;
-        targetId = `stone_${Date.now()}`;
-        addStoneType({
-          id: targetId,
-          name: `Taş ${n}`,
-          color: PRESET_COLORS[(n - 1) % PRESET_COLORS.length],
-          contourIds: [],
-          thickness: 2.0,
-        });
-        setActiveStoneTypeId(targetId);
-      }
-      assignContoursToType(targetId, handles);
-      clearSelection();
-    },
-    [
-      activeStoneTypeId,
-      totalSelected,
-      selectedObjectsSet,
-      assignContoursToType,
-      clearSelection,
-      stoneTypes.length,
-      addStoneType,
-      setActiveStoneTypeId,
-    ],
-  );
+  /**
+   * Ana aksiyon: seçili kontürleri yeni taş tipi olarak ata.
+   * Renk + isim → yeni StoneType oluştur → kontürleri bağla → seçimi temizle.
+   */
+  const handleAssign = useCallback(() => {
+    if (totalSelected === 0) return;
+    const handles: string[] = [];
+    selectedObjectsSet.forEach((obj: any) => {
+      const handle = obj.userData?.handle || obj.uuid;
+      if (handle) handles.push(handle);
+    });
+    const id = `stone_${Date.now()}`;
+    addStoneType({
+      id,
+      name: suggestedName,
+      color: assignColor,
+      contourIds: [],
+      thickness: 2.0,
+    });
+    assignContoursToType(id, handles);
+    clearSelection();
+    // Sonraki atama için bir sonraki renk
+    setAssignColor(PRESET_COLORS[stoneTypes.length % PRESET_COLORS.length]);
+    setAssignName('');
+  }, [
+    totalSelected, selectedObjectsSet, suggestedName, assignColor,
+    addStoneType, assignContoursToType, clearSelection, stoneTypes.length,
+  ]);
+
+  /**
+   * Opsiyonel: seçili kontürleri mevcut bir taş tipine ekle (karttaki +).
+   */
+  const handleAddToExisting = useCallback((stoneId: string) => {
+    if (totalSelected === 0) return;
+    const handles: string[] = [];
+    selectedObjectsSet.forEach((obj: any) => {
+      const handle = obj.userData?.handle || obj.uuid;
+      if (handle) handles.push(handle);
+    });
+    assignContoursToType(stoneId, handles);
+    clearSelection();
+  }, [totalSelected, selectedObjectsSet, assignContoursToType, clearSelection]);
 
   const handleUnassignContours = useCallback(() => {
     if (totalSelected === 0) return;
@@ -107,73 +137,30 @@ export default function StoneTypePanel() {
   }, [totalSelected, selectedObjectsSet, unassignContours, clearSelection]);
 
   return (
-    <div className="flex flex-col bg-background/50">
-      <div className="flex justify-between items-center mb-2.5">
-        <h2 className="text-sm font-semibold flex items-center gap-1.5">
-          <Tag className="w-4 h-4 text-primary" />
-          Taş Tipleri
-        </h2>
-        {!isAdding && (
-          <Button variant="ghost" size="sm" onClick={() => setIsAdding(true)} className="h-7 text-xs">
-            <Plus className="w-3.5 h-3.5 mr-1" /> Yeni Tip
-          </Button>
+    <div className="flex flex-col bg-background/50 h-full">
+      {/* Başlık */}
+      <div className="flex items-center gap-1.5 mb-2">
+        <Tag className="w-4 h-4 text-primary" />
+        <h2 className="text-sm font-semibold">Taş Tipleri</h2>
+        {stoneTypes.length > 0 && (
+          <span className="ml-auto text-[11px] text-muted-foreground">
+            {stoneTypes.length} tip
+          </span>
         )}
       </div>
 
-      {isAdding && (
-        <div className="bg-muted/40 p-3 rounded-lg mb-3 border border-border">
-          <div className="flex items-center gap-2">
-            <Input
-              autoFocus
-              placeholder="Örn: 4mm Kristal"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              className="h-8 text-sm flex-1"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAddNew();
-                if (e.key === 'Escape') setIsAdding(false);
-              }}
-            />
-            <div className="flex gap-1">
-              {PRESET_COLORS.slice(0, 5).map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setNewColor(c)}
-                  className={`w-6 h-6 rounded-full border-2 transition-transform ${newColor === c ? 'border-foreground scale-110' : 'border-transparent hover:scale-110'}`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-            <Button size="sm" className="h-8" onClick={handleAddNew} disabled={!newName.trim()}>
-              Ekle
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsAdding(false)}>
-              <X className="w-3.5 h-3.5" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Seçili obje badge */}
-      {totalSelected > 0 && (
-        <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300">
-          <CheckCircle2 className="w-3.5 h-3.5" />
-          <span className="font-medium">{totalSelected} obje seçildi</span>
-          <span className="text-muted-foreground ml-auto">
-            {activeStoneTypeId ? 'Aktif tipe ata' : '«Ata» ile otomatik taş tipi oluştur'}
-          </span>
-        </div>
-      )}
-
-      {stoneTypes.length === 0 && !isAdding ? (
-        <div className="text-center p-4 border border-dashed rounded-lg text-muted-foreground w-full">
-          <p className="text-sm">Henüz taş tipi eklenmemiş.</p>
-          <p className="text-[11px] mt-1 opacity-70">Dxf üzerindeki konturleri boyamak icin once bir tas tipi olusturun.</p>
+      {/* Mevcut taş tipleri listesi */}
+      {stoneTypes.length === 0 ? (
+        <div className="text-center p-4 border border-dashed rounded-lg text-muted-foreground mb-3">
+          <Gem className="w-6 h-6 mb-1.5 opacity-40 mx-auto" />
+          <p className="text-sm">Henüz taş tipi yok.</p>
+          <p className="text-[11px] mt-1 opacity-70">
+            DXF'ten kontür seçin, alttan renk belirleyip atayın.
+          </p>
         </div>
       ) : (
-        <div className="flex-1 space-y-2">
-          {stoneTypes.map((stone: StoneType, index: number) => {
+        <div className="flex-1 space-y-1.5 overflow-y-auto min-h-0 mb-2">
+          {stoneTypes.map((stone: StoneType) => {
             const isActive = activeStoneTypeId === stone.id;
             const isEditing = editingStoneId === stone.id;
 
@@ -186,14 +173,15 @@ export default function StoneTypePanel() {
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
                       className="h-8 text-sm"
+                      placeholder="Taş adı"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') saveEdit(stone.id);
                         if (e.key === 'Escape') setEditingStoneId(null);
                       }}
                     />
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <Label className="text-[10px] text-muted-foreground flex items-center gap-1 shrink-0">
-                        <PaintBucket className="w-3 h-3" /> Rengi sec
+                        <PaintBucket className="w-3 h-3" /> Renk
                       </Label>
                       {PRESET_COLORS.map((c) => (
                         <button
@@ -206,17 +194,22 @@ export default function StoneTypePanel() {
                       ))}
                     </div>
                     <div className="flex items-center gap-2">
-                      <Label className="text-[10px] text-muted-foreground shrink-0">Kalınlık (mm)</Label>
+                      <Label className="text-[10px] text-muted-foreground shrink-0">Kalınlık</Label>
                       <Input
                         className="h-7 text-xs w-20"
                         value={editThickness}
                         onChange={(e) => setEditThickness(e.target.value)}
                         inputMode="decimal"
                       />
+                      <span className="text-[10px] text-muted-foreground">mm</span>
                     </div>
                     <div className="flex justify-end gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => setEditingStoneId(null)}>Iptal</Button>
-                      <Button size="sm" onClick={() => saveEdit(stone.id)} disabled={!editName.trim()}>Kaydet</Button>
+                      <Button variant="ghost" size="sm" onClick={() => setEditingStoneId(null)}>
+                        İptal
+                      </Button>
+                      <Button size="sm" onClick={() => saveEdit(stone.id)} disabled={!editName.trim()}>
+                        Kaydet
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -226,106 +219,140 @@ export default function StoneTypePanel() {
             return (
               <div
                 key={stone.id}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-pointer select-none ${
-                  isActive ? 'border-primary bg-primary/5 ring-1 ring-primary/20' : 'border-border hover:border-primary/40 bg-card'
+                className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all ${
+                  isActive
+                    ? 'border-primary/50 bg-primary/5'
+                    : 'border-border/60 hover:border-primary/30 bg-card'
                 }`}
-                onClick={() => setActiveStoneTypeId(isActive ? null : stone.id)}                // P3-F42: keyboard accessibility — div onClick yerine tabIndex + role + onKeyDown
-                tabIndex={0}
-                role="button"
-                aria-pressed={isActive}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setActiveStoneTypeId(isActive ? null : stone.id);
-                  }
-                }}              >
-                {/* Renk noktasi */}
+              >
+                {/* Renk noktası */}
                 <div
-                  className={`w-4 h-4 rounded-full shadow-sm shrink-0 ${isActive ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
+                  className="w-3.5 h-3.5 rounded-full shrink-0 ring-1 ring-black/10"
                   style={{ backgroundColor: stone.color }}
                 />
 
-                {/* Isim + sayi */}
+                {/* İsim + kontur sayısı */}
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{stone.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {stone.contourIds.length} atanmış kontur
+                  <div className="text-[10px] text-muted-foreground">
+                    {stone.contourIds.length} kontur
+                    {stone.thickness ? ` · ${stone.thickness}mm` : ''}
                   </div>
                 </div>
 
-                {/* Actionlar */}
-                <div className="flex items-center gap-0.5 shrink-0">
+                {/* Mevcut tipe ekle (seçili kontür varsa, hover'da) */}
+                {totalSelected > 0 && (
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-primary hover:bg-primary/10"
-                    onClick={(e) => { e.stopPropagation(); startEdit(stone); }}
+                    className="h-7 w-7 text-primary hover:bg-primary/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={(e) => { e.stopPropagation(); handleAddToExisting(stone.id); }}
+                    title={`${totalSelected} kontürü bu tipe ekle`}
                   >
-                    <Edit2 className="w-3 h-3" />
+                    <Plus className="w-3.5 h-3.5" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={(e) => { e.stopPropagation(); removeStoneType(stone.id); }}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </div>
+                )}
+
+                {/* Düzenle */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-primary hover:bg-primary/10"
+                  onClick={(e) => { e.stopPropagation(); startEdit(stone); }}
+                >
+                  <Edit2 className="w-3 h-3" />
+                </Button>
+
+                {/* Sil */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={(e) => { e.stopPropagation(); removeStoneType(stone.id); }}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </Button>
               </div>
             );
           })}
+        </div>
+      )}
 
-          {/* Atama butonlari — iki net seçenek */}
-          {totalSelected > 0 && (
-            <div className="sticky bottom-0 bg-background/95 backdrop-blur border border-border rounded-lg p-2.5 mt-2 shadow-sm space-y-2">
-              {/* Aktif tip bilgisi */}
-              {activeStoneTypeId && (
-                <div className="text-[11px] text-muted-foreground text-center">
-                  Aktif tip:{' '}
-                  <span className="font-medium text-foreground">
-                    {stoneTypes.find((s) => s.id === activeStoneTypeId)?.name ?? '—'}
-                  </span>
-                </div>
-              )}
-              <div className="flex gap-2">
-                {/* Aktif tipe ekle (veya ilk tipi oluştur) */}
-                <Button
-                  size="sm"
-                  className="flex-1 h-9 text-xs"
-                  variant="default"
-                  onClick={() => handleAssignContours('active')}
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                  {activeStoneTypeId
-                    ? `${totalSelected} kontürü aktif tipe ekle`
-                    : `${totalSelected} kontürü ata (Taş 1)`}
-                </Button>
-                {/* Yeni taş tipi oluştur */}
-                <Button
-                  size="sm"
-                  className="flex-1 h-9 text-xs"
-                  variant="secondary"
-                  onClick={() => handleAssignContours('new')}
-                >
-                  <Plus className="w-3.5 h-3.5 mr-1.5" />
-                  + Yeni Taş Tipi
-                </Button>
-              </div>
-              {/* Kaldır — sadece aktif tip varsa */}
-              {activeStoneTypeId && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="w-full h-7 text-xs text-muted-foreground"
-                  onClick={handleUnassignContours}
-                >
-                  <Trash2 className="w-3 h-3 mr-1" />
-                  Seçili kontürleri kaldır
-                </Button>
-              )}
+      {/* === Atama paneli (alt, sticky) === */}
+      {totalSelected > 0 ? (
+        <div className="sticky bottom-0 bg-background/95 backdrop-blur border border-border rounded-lg p-3 shadow-lg space-y-2.5">
+          {/* Seçili kontür sayısı */}
+          <div className="flex items-center gap-2 text-xs">
+            <CheckCircle2 className="w-4 h-4 text-primary" />
+            <span className="font-medium">{totalSelected} kontür seçildi</span>
+          </div>
+
+          {/* Renk seçici */}
+          <div>
+            <Label className="text-[10px] text-muted-foreground mb-1.5 block">
+              Taş rengi
+            </Label>
+            <div className="flex gap-1.5 flex-wrap">
+              {PRESET_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setAssignColor(c)}
+                  className={`w-7 h-7 rounded-full border-2 transition-all ${
+                    assignColor === c
+                      ? 'border-foreground scale-110 ring-2 ring-primary/30'
+                      : 'border-transparent hover:scale-110'
+                  }`}
+                  style={{ backgroundColor: c }}
+                  aria-label={`${COLOR_NAMES[c] ?? c} rengini seç`}
+                />
+              ))}
             </div>
-          )}
+          </div>
+
+          {/* İsim (opsiyonel, otomatik önerilir) */}
+          <div>
+            <Label className="text-[10px] text-muted-foreground mb-1 block">
+              Taş adı <span className="opacity-60">(opsiyonel)</span>
+            </Label>
+            <Input
+              value={assignName}
+              onChange={(e) => setAssignName(e.target.value)}
+              placeholder={suggestedName}
+              className="h-8 text-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAssign();
+              }}
+            />
+          </div>
+
+          {/* Ana aksiyon: Ata */}
+          <Button
+            size="sm"
+            className="w-full h-10 text-sm font-semibold gap-1.5"
+            onClick={handleAssign}
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            {totalSelected} kontürü «{suggestedName}» olarak ata
+          </Button>
+
+          {/* Kaldır (opsiyonel) */}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="w-full h-7 text-[11px] text-muted-foreground"
+            onClick={handleUnassignContours}
+          >
+            <Trash2 className="w-3 h-3 mr-1" />
+            Seçili kontürleri geri al
+          </Button>
+        </div>
+      ) : (
+        /* Kontür seçilmediğinde ipucu */
+        <div className="sticky bottom-0 bg-muted/20 border border-dashed border-border rounded-lg p-3 text-center">
+          <p className="text-[11px] text-muted-foreground">
+            DXF üzerinde kontür seçin → buradan renk belirleyip atayın
+          </p>
         </div>
       )}
     </div>
