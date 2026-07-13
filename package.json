@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node node_modules/next/dist/bin/next dev --turbopack -p 9002",
+    "dev": "bash scripts/start.sh --dev --no-install",
+    "dev:next": "node node_modules/next/dist/bin/next dev --turbopack -p 9002",
     "start:all": "bash scripts/start.sh",
     "start:all:mock": "bash scripts/start.sh --mock",
     "install:all": "bash scripts/start.sh --install",

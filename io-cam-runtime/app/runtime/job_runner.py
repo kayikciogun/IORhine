@@ -10,7 +10,7 @@ from app.motion.kinematics import FabricOffset, fabric_to_robot
 from app.runtime.csv_loader import PlacementRow
 from app.runtime.state import JobPhase
 from app.vision.calibration import load_fabric_offset, load_homography
-from app.vision.detector import Stone, detect_all
+from app.vision.ai_detect import Stone, detect_all
 
 if TYPE_CHECKING:
     from app.glue_sheet.controller import GlueSheet

@@ -384,3 +384,43 @@ export function connectCameraSocket(
     },
   };
 }
+
+export interface SnapshotDetectResult {
+  ok: boolean;
+  objects?: Array<{
+    id: number;
+    index: number;
+    x: number;
+    y: number;
+    cx: number;
+    cy: number;
+    angle: number;
+    w: number;
+    h: number;
+    area: number;
+    score: number;
+  }>;
+  vlm_text?: string;
+  image_base64?: string;
+  error?: string;
+}
+
+export async function runSnapshotDetect(
+  body: {
+    prompt?: string;
+    thresh_val?: number;
+    invert_threshold?: boolean;
+    use_pca_angle?: boolean;
+    is_symmetric?: boolean;
+    draw?: boolean;
+  } = {},
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<SnapshotDetectResult> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/snapshot-detect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await extractError(res, 'runSnapshotDetect');
+  return res.json() as Promise<SnapshotDetectResult>;
+}

@@ -263,7 +263,7 @@ start_frontend() {
   (
     cd "$ROOT" && \
     export NEXT_PUBLIC_RUNTIME_URL="$RUNTIME_URL" && \
-    exec nohup npm run dev >>"$LOG_DIR/frontend.log" 2>&1
+    exec nohup npm run dev:next >>"$LOG_DIR/frontend.log" 2>&1
   ) &
   FRONTEND_PID=$!
 }

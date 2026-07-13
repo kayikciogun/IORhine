@@ -33,6 +33,7 @@ app/vision/calibration.py
 app/vision/detector.py
 app/vision/fast_detect.py
 app/vision/pca_angle.py
+app/vision/stabilizer.py
 app/vision/template_loader.py
 io_cam_runtime.egg-info/PKG-INFO
 io_cam_runtime.egg-info/SOURCES.txt
@@ -48,6 +49,7 @@ tests/test_glue_sheet_api.py
 tests/test_job_runner_e2e.py
 tests/test_job_runner_run_loop.py
 tests/test_motion_controller.py
+tests/test_stabilizer.py
 tests/test_template_loader.py
 tests/test_vision_detector.py
 tests/test_ws_commands.py

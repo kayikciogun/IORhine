@@ -12,7 +12,7 @@ from app.config.runtime_store import get_vision
 from app.config.settings import settings
 from app.runtime.state import JobPhase
 from app.services import services
-from app.vision.fast_detect import fast_detect
+from app.vision.ai_detect import ai_snapshot_detect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -131,16 +131,15 @@ async def ws_camera(websocket: WebSocket):
             vis = get_vision()
 
             def _detect():
-                return fast_detect(
+                objs, annotated, _ = ai_snapshot_detect(
                     frame,
-                    thresh_val=vis.fast_detect_threshold,
-                    min_area=vis.min_contour_area,
-                    max_area=vis.max_contour_area,
-                    blur_kernel=vis.blur_kernel,
-                    show_mask=vis.show_mask,
+                    prompt="stone",
                     draw=True,
+                    block_size=vis.blur_kernel | 1,
+                    c_val=8,
                     use_pca_angle=True,
                 )
+                return objs, annotated
 
             try:
                 stones, annotated = await asyncio.to_thread(_detect)

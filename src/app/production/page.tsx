@@ -11,6 +11,7 @@ import { loadPlacementSnapshot, savePlacementSnapshot } from '@/lib/appSessionSt
 import { loadGlueStripSnapshot, syncGlueStripToRuntime } from '@/lib/glueStripSync';
 import { loadPlanningBundle, type PlanningBundle } from '@/lib/planningPipeline';
 import PlanningSummaryCard from '@/components/production/PlanningSummaryCard';
+import BootScreen from '@/components/production/BootScreen';
 import {
   connectControlSocket,
   getCalibration,
@@ -18,6 +19,8 @@ import {
   getGlueSheetStatus,
   getJobStatus,
   resetGlueSheet,
+  runSnapshotDetect,
+  type SnapshotDetectResult,
   uploadJob,
 } from '@/lib/runtimeClient';
 import type {
@@ -43,6 +46,7 @@ import GlueSheetStatusPanel from '@/components/production/GlueSheetStatus';
 import CalibrationPanel from '@/components/production/CalibrationPanel';
 import VisionTunePanel from '@/components/production/VisionTunePanel';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
@@ -65,6 +69,7 @@ import {
 } from 'lucide-react';
 
 export default function ProductionPage() {
+  const [booted, setBooted] = useState(false);
   const { dxfScene, selectedDxfFile } = useDxf();
   const { stoneTypes, pickPlaceConfig } = usePickPlace();
 
@@ -76,6 +81,10 @@ export default function ProductionPage() {
   const [cameraOn, setCameraOn] = useState(true);
   const [cameraStreamKey, setCameraStreamKey] = useState('default');
   const [detectedObjects, setDetectedObjects] = useState<DetectedStone[]>([]);
+  const [aiSnapshotResult, setAiSnapshotResult] = useState<SnapshotDetectResult | null>(null);
+  const [activeMainView, setActiveMainView] = useState<'live' | 'ai'>('live');
+  const [aiPrompt, setAiPrompt] = useState('Locate all the stones.');
+  const [aiLoading, setAiLoading] = useState(false);
   const [csvRows, setCsvRows] = useState<PlacementCsvRow[]>([]);
   const [calSummary, setCalSummary] = useState<CalibrationSummary | null>(null);
   const [glueStatus, setGlueStatus] = useState<GlueSheetStatus | null>(null);
@@ -116,6 +125,33 @@ export default function ProductionPage() {
     },
     [appendLog],
   );
+
+  const handleRunAiSnapshot = async () => {
+    setAiLoading(true);
+    try {
+      const res = await runSnapshotDetect({
+        prompt: aiPrompt,
+        thresh_val: 0,
+        invert_threshold: true,
+        use_pca_angle: true,
+        is_symmetric: true,
+        draw: true,
+      });
+      setAiSnapshotResult(res);
+      if (res?.image_base64 && !res.error) {
+        setActiveMainView('ai');
+      }
+      if (!res.ok && res.error) {
+        appendLog(`AI Hata: ${res.error}`);
+      } else if (res.objects) {
+        appendLog(`AI Snapshot: ${res.objects.length} nesne tespit edildi.`);
+      }
+    } catch (err) {
+      appendLog(`Snapshot AI Tespiti Başarısız: ${err}`);
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const refreshAux = useCallback(async () => {
     // P2-B12: offline iken early-return — runtime down iken her 8s fetch yapma.
@@ -330,8 +366,10 @@ export default function ProductionPage() {
   const [settingsTab, setSettingsTab] = useState('vision');
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* === Header — minimal, tek satır === */}
+    <>
+      {!booted && <BootScreen onReady={() => setBooted(true)} />}
+      <div className="flex h-screen flex-col overflow-hidden bg-background">
+        {/* === Header — minimal, tek satır === */}
       <header className="shrink-0 z-30 border-b border-border/80 bg-background/95 backdrop-blur-md">
         <div className="px-4 py-2 flex items-center gap-3">
           <Link
@@ -385,49 +423,118 @@ export default function ProductionPage() {
       <div className="flex flex-1 min-h-0">
         {/* SOL: Kamera (büyük) + İş kontrolü (altta) */}
         <main className="flex-1 min-w-0 flex flex-col min-h-0 border-r border-border/60">
-          {/* Kamera — büyük, odak */}
+          {/* Kamera / AI Snapshot — büyük, odak */}
           <div className="relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
-            <LiveCameraView
-              enabled={cameraOn}
-              streamKey={cameraStreamKey}
-              onFrame={handleCameraFrame}
-              onCameraError={handleCameraError}
-              className="w-full h-full object-contain"
-            />
-            {/* Kamera overlay: kapalı/kapak */}
-            {!cameraOn && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/30 text-muted-foreground">
-                <Video className="w-8 h-8 mb-2 opacity-50" />
-                <p className="text-xs">Kamera kapalı</p>
+            {activeMainView === 'ai' && aiSnapshotResult?.image_base64 ? (
+              <div className="relative w-full h-full flex flex-col bg-black">
+                <img
+                  src={aiSnapshotResult.image_base64}
+                  alt="AI Snapshot Big View"
+                  className="w-full h-full object-contain"
+                />
+                {aiSnapshotResult.vlm_text && (
+                  <div className="absolute bottom-3 left-3 right-3 z-20 bg-black/90 border border-purple-500/40 p-3 rounded-lg text-xs font-mono text-purple-200 max-h-32 overflow-y-auto shadow-xl">
+                    <div className="text-purple-400 font-bold mb-1 flex items-center justify-between">
+                      <span>VLM Model Çıktısı (Semantik Tespit Koordinatları):</span>
+                      {aiSnapshotResult.objects && (
+                        <span className="text-[10px] bg-purple-900/80 px-2 py-0.5 rounded text-purple-100 font-sans">
+                          {aiSnapshotResult.objects.length} nesne bulundu
+                        </span>
+                      )}
+                    </div>
+                    {aiSnapshotResult.vlm_text}
+                  </div>
+                )}
               </div>
-            )}
-            {/* FPS overlay (sağ üst) */}
-            {cameraOn && (
-              <CameraHud
-                phase={phase}
-                index={index}
-                total={total}
-                detectedCount={detectedObjects.length}
-              />
+            ) : (
+              <>
+                <LiveCameraView
+                  enabled={cameraOn}
+                  streamKey={cameraStreamKey}
+                  onFrame={handleCameraFrame}
+                  onCameraError={handleCameraError}
+                  className="w-full h-full object-contain"
+                />
+                {/* Kamera overlay: kapalı/kapak */}
+                {!cameraOn && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/30 text-muted-foreground">
+                    <Video className="w-8 h-8 mb-2 opacity-50" />
+                    <p className="text-xs">Kamera kapalı</p>
+                  </div>
+                )}
+                {/* FPS overlay (sağ üst) */}
+                {cameraOn && (
+                  <CameraHud
+                    phase={phase}
+                    index={index}
+                    total={total}
+                    detectedCount={detectedObjects.length}
+                  />
+                )}
+              </>
             )}
           </div>
 
-          {/* Kamera alt araç çubuğu: cihaz seç + aç/kapat */}
-          <div className="shrink-0 border-t border-border/60 bg-card/40 px-3 py-2 flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Switch id="cam" checked={cameraOn} onCheckedChange={setCameraOn} className="scale-90" />
-              <Label htmlFor="cam" className="text-[11px] cursor-pointer">
-                {cameraOn ? 'Kamera açık' : 'Kamera kapalı'}
-              </Label>
+          {/* Kamera alt araç çubuğu: cihaz seç + aç/kapat + kare alma */}
+          <div className="shrink-0 border-t border-border/60 bg-card/50 px-3 py-2 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Switch id="cam" checked={cameraOn} onCheckedChange={setCameraOn} className="scale-90" />
+                <Label htmlFor="cam" className="text-[11px] cursor-pointer">
+                  {cameraOn ? 'Kamera açık' : 'Kamera kapalı'}
+                </Label>
+              </div>
+              <div className="h-4 w-px bg-border" />
+              <CameraDeviceSelector
+                disabled={loading}
+                onSelected={(cfg: CameraSourceConfig) => {
+                  setCameraStreamKey(`${cfg.kind}:${cfg.source_id}:${Date.now()}`);
+                  appendLog(`Kamera: ${cfg.kind} / ${cfg.source_id}`);
+                }}
+              />
             </div>
-            <div className="h-4 w-px bg-border" />
-            <CameraDeviceSelector
-              disabled={loading}
-              onSelected={(cfg: CameraSourceConfig) => {
-                setCameraStreamKey(`${cfg.kind}:${cfg.source_id}:${Date.now()}`);
-                appendLog(`Kamera: ${cfg.kind} / ${cfg.source_id}`);
-              }}
-            />
+
+            <div className="flex items-center gap-2 flex-1 max-w-xl ml-auto">
+              {activeMainView === 'ai' ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setActiveMainView('live')}
+                  className="h-7 px-2.5 text-xs bg-purple-950 hover:bg-purple-900 border-purple-500/60 text-purple-100 shrink-0 font-medium"
+                >
+                  Canlı Kameraya Dön
+                </Button>
+              ) : (
+                aiSnapshotResult?.image_base64 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setActiveMainView('ai')}
+                    className="h-7 px-2.5 text-xs bg-purple-950 hover:bg-purple-900 border-purple-500/60 text-purple-100 shrink-0 font-medium"
+                  >
+                    AI Sonucunu Göster
+                  </Button>
+                )
+              )}
+              <Input
+                type="text"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder="AI Prompt (örn: Locate all the stones.)"
+                className="h-7 text-xs bg-black/50 border-purple-500/40 text-purple-100 flex-1 placeholder:text-purple-300/40"
+              />
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={aiLoading || !cameraOn}
+                onClick={handleRunAiSnapshot}
+                className="h-7 px-3 text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow-md shadow-purple-900/30 shrink-0 flex items-center gap-1.5"
+              >
+                <span className="inline-block w-2 h-2 rounded-full bg-purple-300 animate-pulse" />
+                {aiLoading ? 'Analiz Ediliyor...' : 'Tek Kare AI Tespiti (Kare Al)'}
+              </Button>
+            </div>
           </div>
 
           {/* İş kontrolü — büyük, belirgin, alt panel */}
@@ -524,7 +631,22 @@ export default function ProductionPage() {
                 </Tabs>
                 <div className="max-h-[400px] overflow-y-auto custom-scrollbar pt-1">
                   {settingsTab === 'vision' && (
-                    <VisionTunePanel objects={detectedObjects} />
+                    <VisionTunePanel
+                      objects={detectedObjects}
+                      aiSnapshotResult={aiSnapshotResult}
+                      onAiSnapshotResult={(res) => {
+                        setAiSnapshotResult(res);
+                        if (res?.image_base64 && !res.error) {
+                          setActiveMainView('ai');
+                        }
+                      }}
+                      activeMainView={activeMainView}
+                      onSwapView={(view) => setActiveMainView(view)}
+                      cameraOn={cameraOn}
+                      cameraStreamKey={cameraStreamKey}
+                      onCameraFrame={handleCameraFrame}
+                      onCameraError={handleCameraError}
+                    />
                   )}
                   {settingsTab === 'glue' && (
                     <GlueSheetStatusPanel
@@ -585,6 +707,7 @@ export default function ProductionPage() {
         </aside>
       </div>
     </div>
+    </>
   );
 }
 

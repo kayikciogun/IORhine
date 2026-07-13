@@ -112,9 +112,10 @@ class OpenCvFrameSource(FrameSource):
             return
         if platform.system() == "Darwin":
             # iPhone Continuity: yüksek FPS / grab() cihazı düşürür.
+            from app.config.settings import settings
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self._cap.set(cv2.CAP_PROP_FPS, 15)
+            self._cap.set(cv2.CAP_PROP_FPS, settings.camera_idle_fps)
         try:
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception:

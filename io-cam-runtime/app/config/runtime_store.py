@@ -11,13 +11,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VisionConfig:
-    blur_kernel: int = 9
-    fast_detect_threshold: int = 120  # web_angle varsayılan; 0 = Otsu
-    min_contour_area: int = 500  # settings.py + README ile uyumlu (P1-21)
+    blur_kernel: int = 3
+    fast_detect_threshold: int = 130  # web_angle varsayılan; 0 = Otsu
+    min_contour_area: int = 50  # küçük taşlar/rhinestone için minimum alan
     max_contour_area: int = 80000
     show_mask: bool = False
-    match_threshold: float = 0.15
-    invert_threshold: bool = False  # True = taş açık, zemin koyu
+    match_threshold: float = 0.25
+    invert_threshold: bool = True  # True = beyaz kağıt zemin üzerinde koyu taşlar / ters kontrast
+    block_size: int = 31  # Adaptive threshold block size
+    c_val: int = 8  # Adaptive threshold C sensitivity
+
 
 
 def _vision_path(cal_dir: Path) -> Path:
@@ -67,6 +70,8 @@ def load_vision_config(cal_dir: Path | None = None) -> VisionConfig:
         show_mask=bool(data.get("show_mask", False)),
         match_threshold=float(data.get("match_threshold", 0.15)),
         invert_threshold=bool(data.get("invert_threshold", False)),
+        block_size=int(data.get("block_size", 31)),
+        c_val=int(data.get("c_val", 8)),
     )
 
 
@@ -78,13 +83,11 @@ def save_vision_config(cfg: VisionConfig, cal_dir: Path | None = None) -> None:
 
 
 def apply_vision_to_settings(cfg: VisionConfig) -> None:
-    settings.blur_kernel = cfg.blur_kernel
-    settings.fast_detect_threshold = cfg.fast_detect_threshold
-    settings.min_contour_area = cfg.min_contour_area
-    settings.max_contour_area = cfg.max_contour_area
-    settings.show_mask = cfg.show_mask
-    settings.match_threshold = cfg.match_threshold
-    settings.invert_threshold = cfg.invert_threshold
+    for key, value in asdict(cfg).items():
+        try:
+            setattr(settings, key, value)
+        except ValueError:
+            pass
 
 
 # Module-level cache (reloaded on save / startup)

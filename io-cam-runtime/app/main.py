@@ -19,6 +19,18 @@ async def lifespan(_app: FastAPI):
         settings.mock_hardware = True
     apply_motion_config(settings, load_motion_config(settings.calibration_dir))
     init_runtime_store()
+
+    # VLM modelini (paligemma2-3b-mix-448-4bit) backend başlarken arka planda belleğe yükle
+    try:
+        import asyncio
+        from app.vision.ai_detect import get_ai_model
+        get_ai_model()
+    except Exception as e:
+        import logging
+        logging.getLogger("io_cam.main").warning(
+            "VLM modeli başlangıçta yüklenirken hata oluştu (daha sonra istek anında tekrar denenecek): %s", e
+        )
+
     yield
     # Lifespan teardown: motion driver + kamera thread/VideoCapture leak'i
     # önlemek için kapat (P1-6). Kamera arka plan thread + OpenCV capture
@@ -59,4 +71,10 @@ app.include_router(ws.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "mock": settings.mock_hardware}
+    try:
+        from app.vision.ai_detect import _ai_status
+        ai_status = _ai_status
+    except ImportError:
+        ai_status = "uninitialized"
+        
+    return {"status": "ok", "mock": settings.mock_hardware, "ai_status": ai_status}

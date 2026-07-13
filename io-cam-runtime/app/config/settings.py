@@ -47,20 +47,21 @@ class Settings(BaseSettings):
     vacuum_pick_retries: int = 2
     vacuum_sensor_pin: int | None = None
 
-    min_contour_area: int = 500
-    blur_kernel: int = 9
-    match_threshold: float = 0.15
+    min_contour_area: int = 50
+    blur_kernel: int = 3
+    match_threshold: float = 0.25
 
     glue_cell_size_mm: float = 20.0
     glue_cols: int = 100
     glue_rows: int = 100
 
     camera_index: int = 0
-    camera_idle_fps: float = 30.0
-    fast_detect_threshold: int = 120
+    camera_idle_fps: float = 24.0
+    fast_detect_threshold: int = 130
     max_contour_area: int = 80000
     show_mask: bool = False
-    invert_threshold: bool = False
+    invert_threshold: bool = True
+
     camera_jpeg_quality: int = 60
     # Stream optimize: encode öncesi downscale (0 = devre dışı).
     # 720p/1080p kamera → 640px'e düşür base64 payload'u küçült + encode hızlansın.
