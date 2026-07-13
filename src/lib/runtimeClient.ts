@@ -367,7 +367,7 @@ export function connectCameraSocket(
       const meta = JSON.parse(metaJson) as Extract<
         CameraEvent,
         { evt: 'frame' }
-      > & { camera_warning?: string; mock_frame?: boolean };
+      > & { camera_warning?: string };
       const jpgBytes = buf.slice(4 + metaLen);
       handlers.onFrame({
         ...meta,
@@ -401,6 +401,8 @@ export interface SnapshotDetectResult {
     score: number;
   }>;
   vlm_text?: string;
+  prompt?: string;
+  max_stones?: number;
   image_base64?: string;
   error?: string;
 }

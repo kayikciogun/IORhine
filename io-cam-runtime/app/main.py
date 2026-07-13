@@ -28,6 +28,31 @@ async def lifespan(_app: FastAPI):
     # Server başlar başlamaz VLM modelini arka plan thread'inde yükle ve ısıt
     from app.vision.ai_detect import get_ai_model
     get_ai_model()
+
+    # Son kaydedilen kamerayı arka planda aç — üretim sayfasında "Bağla" tıklaması gerekmesin.
+    import asyncio
+    import logging
+
+    _log = logging.getLogger(__name__)
+
+    async def _restore_saved_camera() -> None:
+        from app.runtime.camera_sources import load_saved_config
+
+        saved = load_saved_config(settings.calibration_dir)
+        if saved is None and not settings.mock_hardware:
+            return
+        cam = services.ensure_camera()
+        try:
+            await asyncio.to_thread(cam.open)
+            _log.info(
+                "Kayıtlı kamera otomatik açıldı: %s:%s",
+                cam.config.kind if cam.config else "?",
+                cam.config.source_id if cam.config else "?",
+            )
+        except Exception as e:
+            _log.warning("Kayıtlı kamera otomatik açılamadı: %s", e)
+
+    asyncio.create_task(_restore_saved_camera())
     yield
     # Lifespan teardown: motion driver + kamera thread/VideoCapture leak'i
     # önlemek için kapat (P1-6). Kamera arka plan thread + OpenCV capture

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   getCameraStatus,
   listCameraDevices,
@@ -29,6 +29,10 @@ function flattenDevices(list: CameraDeviceList): CameraDevice[] {
   return list.usb;
 }
 
+function configId(cfg: CameraSourceConfig): string {
+  return `${cfg.kind}:${cfg.source_id}`;
+}
+
 export default function CameraDeviceSelector({ onSelected, disabled }: Props) {
   const [devices, setDevices] = useState<CameraDeviceList | null>(null);
   const [active, setActive] = useState<CameraSourceConfig | null>(null);
@@ -36,6 +40,26 @@ export default function CameraDeviceSelector({ onSelected, disabled }: Props) {
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const onSelectedRef = useRef(onSelected);
+  onSelectedRef.current = onSelected;
+
+  const connectDevice = useCallback(async (deviceId: string) => {
+    setApplying(true);
+    setError(null);
+    try {
+      const { config } = await selectCameraDevice(deviceId);
+      setActive(config);
+      setSelectedId(configId(config));
+      onSelectedRef.current?.(config);
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setApplying(false);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -48,18 +72,35 @@ export default function CameraDeviceSelector({ onSelected, disabled }: Props) {
       setDevices(list);
       setActive(status.config);
       if (status.config) {
-        setSelectedId(`${status.config.kind}:${status.config.source_id}`);
+        setSelectedId(configId(status.config));
       }
+      return status;
     } catch (e) {
       setError(String(e));
+      return null;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Açılışta son kaydedilen kamerayı otomatik bağla ("Bağla" tıklaması gerekmesin).
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    (async () => {
+      const status = await refresh();
+      if (cancelled || !status?.config) return;
+
+      if (status.is_live) {
+        onSelectedRef.current?.(status.config);
+        return;
+      }
+
+      await connectDevice(configId(status.config));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh, connectDevice]);
 
   const flat = useMemo(
     () => (devices ? flattenDevices(devices) : []),
@@ -68,17 +109,7 @@ export default function CameraDeviceSelector({ onSelected, disabled }: Props) {
 
   const handleApply = async () => {
     if (!selectedId) return;
-    setApplying(true);
-    setError(null);
-    try {
-      const { config } = await selectCameraDevice(selectedId);
-      setActive(config);
-      onSelected?.(config);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setApplying(false);
-    }
+    await connectDevice(selectedId);
   };
 
   const activeLabel = useMemo(() => {

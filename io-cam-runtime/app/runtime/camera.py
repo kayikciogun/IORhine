@@ -43,8 +43,8 @@ class Camera:
     def open(self) -> None:
         # Sessiz fail fix (P1-10): eskiden exception'u yutup sadece ``_error``
         # set ediyordu; çağıran kod (ws.py, calibration.py) ``open()`` başarılı
-        # sanıp mock frame ile devam ediyordu → yanıltıcı kalibrasyon. Artık
-        # hatayı yeniden fırlat; thread yine de başlatılır (mock frame akışı için).
+        # sanıp sahte kare ile devam ediyordu → yanıltıcı kalibrasyon. Artık
+        # hatayı yeniden fırlat; thread yine de başlatılır (yeniden deneme için).
         try:
             self._open_source()
         except Exception as e:
@@ -53,7 +53,7 @@ class Camera:
             self._start_thread()
             raise
         # P2-fix: başarılı open'da da arka plan thread'i başlat — yoksa
-        # ``_latest`` hiç dolmaz ve ``capture()`` her zaman mock frame döndürür.
+        # ``_latest`` hiç dolmaz ve ``capture()`` hata verir.
         self._start_thread()
 
     def _open_source(self) -> None:
@@ -152,19 +152,18 @@ class Camera:
     def capture(self) -> np.ndarray:
         """Son kareyi döndürür; VideoCapture yalnızca arka plan thread'inde okunur.
 
-        Eğer arka plan thread henüz frame okuyamadıysa (kamera açılmadı,
-        frame okuma hatası, veya ilk frame henüz gelmedi) ``_mock_frame()``
-        döndürür. ``is_live`` property ile çağıran kod gerçek frame olup
-        olmadığını anlayabilir.
+        Henüz geçerli kare yoksa ``RuntimeError`` fırlatır (sahte mock görüntü yok).
+        ``is_live`` ile çağıran kod kare hazır mı bakabilir.
         """
         with self._lock:
             if self._latest is not None:
                 return self._latest.copy()
-        return _mock_frame()
+            err = self._error or "Kamera frame yok"
+        raise RuntimeError(err)
 
     @property
     def is_live(self) -> bool:
-        """Son kare gerçek kamera frame'i mi yoksa mock fallback mi?"""
+        """Son geçerli kamera karesi var mı?"""
         with self._lock:
             return self._latest is not None
 
@@ -179,23 +178,3 @@ class Camera:
     def error(self) -> str:
         with self._lock:
             return self._error
-
-
-def _mock_frame() -> np.ndarray:
-    import cv2
-
-    t = time.time()
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
-    ox = int(30 * np.sin(t * 2))
-    cv2.rectangle(img, (200 + ox, 180), (280 + ox, 260), (255, 255, 255), -1)
-    cv2.rectangle(img, (350, 200), (420, 270), (180, 180, 180), -1)
-    cv2.putText(
-        img,
-        "MOCK",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (100, 200, 255),
-        2,
-    )
-    return img

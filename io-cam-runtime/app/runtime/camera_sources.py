@@ -82,13 +82,15 @@ class FrameSource(ABC):
 
 
 class MockFrameSource(FrameSource):
+    """Mock hardware: boş kare (çizimli sahte kamera görüntüsü yok)."""
+
     def open(self) -> None:
         pass
 
     def read(self) -> tuple[bool, Any]:
-        from app.runtime.camera import _mock_frame
+        import numpy as np
 
-        return True, _mock_frame()
+        return True, np.zeros((480, 640, 3), dtype=np.uint8)
 
     def close(self) -> None:
         pass

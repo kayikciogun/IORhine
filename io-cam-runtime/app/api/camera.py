@@ -73,11 +73,13 @@ async def camera_status():
         if saved:
             cfg = saved.to_dict()
 
-    err = services.camera.error if services.camera else ""
+    cam = services.camera
+    err = cam.error if cam else ""
     return {
         "config": cfg,
         "error": err,
         "mock_hardware": settings.mock_hardware,
+        "is_live": bool(cam is not None and cam.is_live),
     }
 
 

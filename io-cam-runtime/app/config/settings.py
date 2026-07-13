@@ -8,7 +8,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CONFIG_DIR = Path(__file__).resolve().parent
+_RUNTIME_ROOT = _CONFIG_DIR.parents[1]  # io-cam-runtime/
 _DEFAULT_MOTION = _CONFIG_DIR / "motion.json"
+_ENV_FILE = _RUNTIME_ROOT / ".env"
 
 
 def _load_motion_defaults() -> dict:
@@ -23,7 +25,8 @@ _motion = _load_motion_defaults()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="IO_CAM_",
-        env_file=".env",
+        env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None,
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -67,6 +70,10 @@ class Settings(BaseSettings):
     # 720p/1080p kamera → 640px'e düşür base64 payload'u küçült + encode hızlansın.
     camera_stream_max_width: int = 640
 
+    # VLM detection — .env'den canlı okunur (load_settings); frontend kodu değişmez.
+    vlm_prompt: str = "single black rhinestone"
+    vlm_max_stones: int = Field(default=1, ge=1, le=20)
+
     rotation_axis: Literal["A", "E"] = _motion.get("rotation_axis", "A")  # type: ignore[arg-type]
     safe_z: float = _motion.get("safe_z", 5.0)
     pick_z: float = _motion.get("pick_z", 0.5)
@@ -90,3 +97,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def load_settings() -> Settings:
+    """``.env`` dosyasını her çağrıda yeniden okur — prompt değişince runtime restart gerekmez."""
+    return Settings()

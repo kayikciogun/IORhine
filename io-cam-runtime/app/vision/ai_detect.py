@@ -33,6 +33,7 @@ from PIL import Image
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 COL_CENTER = (0, 60, 255)
 COL_AXIS = (0, 140, 255)
+COL_BBOX = (0, 255, 120)  # VLM bbox — yeşil
 
 def normalize_angle(rect: tuple) -> float:
     angle = rect[2]
@@ -130,15 +131,26 @@ def contour_angle_deg(contour: np.ndarray, is_symmetric: bool = False) -> float:
 
 logger = logging.getLogger("io_cam.ai_detect")
 
+
+def _vlog(msg: str, *args: Any) -> None:
+    """Stdout → runtime.log. logger.info yok (çift satır / uvicorn formatı)."""
+    text = msg % args if args else msg
+    print(f"[VLM] {text}", flush=True)
+
 _AI_MODEL_PATH = "tiiuae/Falcon-Perception"
-# 0.6B model — 300M tespit kalitesi yetersizdi (0 nesne). 4-bit quantize
-# falcon_perception tarafından desteklenmiyor (özel mimari). Hız optimizasyonu:
-# tek taş → az token; çok taş → taş başına ~6 token + marj (üst sınır 60).
+# 0.6B model — 300M tespit kalitesi yetersizdi (0 nesne).
 # max_dimension=512 (768 yerine).
-_AI_MAX_NEW_TOKENS_CAP = 60
-_AI_MAX_NEW_TOKENS_SINGLE = 20
-_AI_IMG_MAX_DIM = 512
-_AI_IMG_MIN_DIM = 256
+#
+# NOT: Falcon MLX ``max_new_tokens`` block_size=128 ile yukarı yuvarlanır;
+# tek başına limiti gevşek. Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz.
+_AI_MAX_NEW_TOKENS_CAP = 48
+# presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
+_AI_MAX_NEW_TOKENS_SINGLE = 8
+from app.vision.vlm_preprocess import (
+    VLM_IMG_MAX_DIM as _AI_IMG_MAX_DIM,
+    VLM_IMG_MIN_DIM as _AI_IMG_MIN_DIM,
+    resize_for_vlm,
+)
 _DEFAULT_MAX_STONES = 1
 _model = None
 _tokenizer = None
@@ -146,16 +158,9 @@ _model_args = None
 _engine = None
 
 _ai_status = "uninitialized"  # uninitialized, loading, warming_up, ready, error
-# Worker kuyruğu: (Future, batch, max_new_tokens) üçlüleri. Worker thread tek tek işler.
-# Future ile sonuç/exception güvenle iletilir; ``id(batch)`` ve busy-wait yok.
-# ``maxsize=1`` ile backpressure: inference sürerken yeni batch kuyruğa giremez,
-# çağıran ``put``'ta bloklanır → ws.py döngüsü otomatik throttle olur.
-_ai_request_queue: "queue.Queue[tuple[Future | None, Any, int]]" = queue.Queue(maxsize=1)
+# Worker: (Future, batch, max_new_tokens, max_stones)
+_ai_request_queue: "queue.Queue[tuple[Future | None, Any, int, int]]" = queue.Queue(maxsize=1)
 _worker_started = False
-# Inference sırasında yeni istek gelirse mevcut batch'in sonucunu paylaşmak için
-# tek slot cache. Aynı anda birden fazla çağrı → bir tanesi çalışır, diğerleri
-# bekleyip aynı sonucu paylaşır (dedup) yerine basit throttle tercih ettik:
-# maxsize=1 zaten queue'yu dolduruyor, ikinci ``put`` block olur.
 _ai_busy_lock = threading.Lock()
 
 
@@ -164,15 +169,27 @@ def _max_new_tokens_for(max_stones: int) -> int:
     n = max(1, int(max_stones))
     if n <= 1:
         return _AI_MAX_NEW_TOKENS_SINGLE
-    return min(_AI_MAX_NEW_TOKENS_CAP, 12 + n * 6)
+    return min(_AI_MAX_NEW_TOKENS_CAP, 4 + n * 3 + 2)
 
 
-def _detection_subject(prompt: str, max_stones: int) -> str:
-    """Tek taş istenince VLM'e 'all stones' yerine tek nesne prompt'u ver."""
-    defaultish = {"", "stone", "stones", "Locate all the stones.", "Locate all the stones"}
-    if max_stones <= 1 and prompt.strip() in defaultish:
-        return "single gemstone"
-    return prompt
+def _stop_token_ids_for(max_stones: int) -> list[int]:
+    """Tek taş: ilk ``<|seg|>`` sonrası dur — kalan taşlar için token üretme."""
+    ids: list[int] = []
+    if _tokenizer is None:
+        return ids
+    eos = getattr(_tokenizer, "eos_token_id", None)
+    if eos is not None:
+        ids.append(int(eos))
+    if max_stones <= 1:
+        seg = getattr(_tokenizer, "seg_token_id", None)
+        if seg is None:
+            try:
+                seg = _tokenizer.convert_tokens_to_ids("<|seg|>")
+            except Exception:
+                seg = None
+        if seg is not None:
+            ids.append(int(seg))
+    return ids
 
 
 def _ai_worker_thread():
@@ -182,9 +199,6 @@ def _ai_worker_thread():
         logger.info("Falcon-Perception weights loading in background...")
         from falcon_perception import load_and_prepare_model
         from falcon_perception.mlx.batch_inference import BatchInferenceEngine
-        # dtype: float16 → bfloat16. MLX Apple Silicon'da bfloat16 daha verimli
-        # (daha az precision loss ama aynı hız). 4-bit quantize falcon_perception
-        # tarafından desteklenmiyor (load_from_hf_export_mlx sadece float16/bf16/f32).
         _model, _tokenizer, _model_args = load_and_prepare_model(hf_model_id=_AI_MODEL_PATH, backend="mlx", dtype="bfloat16")
         _engine = BatchInferenceEngine(_model, _tokenizer)
 
@@ -214,20 +228,104 @@ def _ai_worker_thread():
         return
 
     while True:
-        future, batch, max_new_tokens = _ai_request_queue.get()
+        future, batch, max_new_tokens, max_stones = _ai_request_queue.get()
         if future is None:
             break
         try:
+            stop_ids = _stop_token_ids_for(max_stones)
             tokens, aux_outputs = _engine.generate(
-                **batch, max_new_tokens=max_new_tokens, task="detection"
+                **batch,
+                max_new_tokens=max_new_tokens,
+                stop_token_ids=stop_ids or None,
+                task="detection",
             )
+            # Girdi uzunluğu: sadece generate edilen kısmı decode etmek için
+            try:
+                input_len = int(__import__("numpy").asarray(batch["tokens"]).shape[-1])
+            except Exception:
+                input_len = 0
             if not future.done():
-                future.set_result(aux_outputs)
+                # tokens = padded id dizisi, aux = bbox parse, input_len = prompt uzunluğu
+                future.set_result((tokens, aux_outputs, input_len))
         except Exception as e:
             if not future.done():
                 future.set_exception(e)
         finally:
             _ai_request_queue.task_done()
+
+
+def _format_vlm_tokens(tokens: Any, input_len: int = 0) -> tuple[str, list[int]]:
+    """Generate edilen token'ları decode et.
+
+    Returns:
+        (decoded_text, gen_ids) — özel token'lar strip edilince metin boş olabilir;
+        asıl detection çıktısı ``bboxes_raw`` (coord/size special token'ları).
+    """
+    empty: list[int] = []
+    if tokens is None:
+        return "", empty
+    if isinstance(tokens, str):
+        return tokens.strip(), empty
+
+    try:
+        import numpy as np
+
+        arr = np.asarray(tokens)
+    except Exception:
+        return str(tokens).strip(), empty
+
+    if not (getattr(arr, "dtype", None) is not None and np.issubdtype(arr.dtype, np.number)):
+        return str(tokens).strip(), empty
+
+    if arr.ndim >= 2:
+        row = arr.reshape(arr.shape[0], -1)[0]
+    else:
+        row = arr.reshape(-1)
+    pad_id = getattr(_tokenizer, "pad_token_id", 0) if _tokenizer is not None else 0
+    start = max(0, int(input_len))
+    if start < row.shape[0]:
+        row = row[start:]
+    ids = [int(x) for x in row.tolist() if int(x) != int(pad_id)]
+    if not ids:
+        return "", empty
+    text = ""
+    if _tokenizer is not None:
+        try:
+            # skip_special=False: detection special token'ları da görünsün
+            text = _tokenizer.decode(ids, skip_special_tokens=False).strip()
+        except Exception:
+            text = ""
+    if not text:
+        text = "[" + ", ".join(str(i) for i in ids) + "]"
+    return text, ids
+
+
+def _format_bboxes_raw(raw: Any) -> str:
+    """bboxes_raw log satırı — float'ları 2 ondalığa yuvarla (JSON dump kısaltması)."""
+
+    def _round(obj: Any) -> Any:
+        if isinstance(obj, float):
+            return round(obj, 2)
+        if isinstance(obj, dict):
+            return {k: _round(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_round(v) for v in obj]
+        # numpy skaler
+        try:
+            import numpy as np
+
+            if isinstance(obj, np.floating):
+                return round(float(obj), 2)
+        except Exception:
+            pass
+        return obj
+
+    try:
+        import json
+
+        return json.dumps(_round(raw), ensure_ascii=False, default=str)
+    except Exception:
+        return repr(raw)
 
 def get_ai_model():
     """Backward-compatible entry point used by other modules."""
@@ -376,21 +474,11 @@ def ai_snapshot_detect(
     from falcon_perception import build_prompt_for_task
     from falcon_perception.mlx.batch_inference import process_batch_and_generate
 
-    img_h, img_w = frame.shape[:2]
-    # Ön küçültme: 384px max_dimension'a kadar resize et. ``process_batch_and_generate``
-    # kendi resize'ı yapsa bile, büyük numpy array → PIL → resize pahalı. Burada
-    # cv2 (C++ optimize) ile küçült, PIL'e küçük array ver → ~2x preprocess hız.
-    if max(img_h, img_w) > _AI_IMG_MAX_DIM:
-        scale = _AI_IMG_MAX_DIM / max(img_h, img_w)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        small = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    else:
-        scale = 1.0
-        small = frame
+    # Ön küçültme: ``process_batch_and_generate`` öncesi cv2 ile küçült (dataset ile aynı).
+    small, _, _, _ = resize_for_vlm(frame, max_dim=_AI_IMG_MAX_DIM)
     pil_image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
 
-    subject = _detection_subject(prompt, max_stones)
+    subject = (prompt or "").strip() or "stone"
     text_prompt = build_prompt_for_task(subject, "detection")
     max_new_tokens = _max_new_tokens_for(max_stones)
     batch = process_batch_and_generate(
@@ -417,13 +505,16 @@ def ai_snapshot_detect(
     if skip_if_busy:
         # Non-blocking put: queue doluysa ``queue.Full`` → bu frame atlanır.
         try:
-            _ai_request_queue.put_nowait((future, batch, max_new_tokens))
+            _ai_request_queue.put_nowait((future, batch, max_new_tokens, max_stones))
         except queue.Full:
             return objects, out, text_prompt
     else:
         # Blocking put ama kısa timeout ile — uzun süredir doluysa yine de hata.
         try:
-            _ai_request_queue.put((future, batch, max_new_tokens), timeout=busy_timeout_s)
+            _ai_request_queue.put(
+                (future, batch, max_new_tokens, max_stones),
+                timeout=busy_timeout_s,
+            )
         except queue.Full:
             logger.warning("AI queue dolu (busy) — put timeout %.1fs", busy_timeout_s)
             return objects, out, text_prompt
@@ -431,11 +522,21 @@ def ai_snapshot_detect(
     # Async context'te çağıran ``await asyncio.wrap_future(future)`` tercih etmeli;
     # burada ``result(timeout)`` ile sonsuz bekleme yerine 30 sn deadline veriyoruz.
     try:
-        aux_outputs = future.result(timeout=30.0)
+        result = future.result(timeout=30.0)
     except Exception as exc:
         logger.error("AI Inference Error: %s", exc)
         return objects, out, text_prompt
 
+    if isinstance(result, tuple) and len(result) == 3:
+        tokens, aux_outputs, input_len = result
+    elif isinstance(result, tuple) and len(result) == 2:
+        tokens, aux_outputs = result
+        input_len = 0
+    else:
+        # Eski worker sonucu (sadece aux) — güvenlik
+        tokens, aux_outputs, input_len = None, result, 0
+
+    vlm_reply, gen_ids = _format_vlm_tokens(tokens, input_len=input_len)
     aux = aux_outputs[0]
 
     # ── Get bboxes from aux ─────────────────────────────────────
@@ -457,31 +558,49 @@ def ai_snapshot_detect(
     # güvenlik ağı olarak üst sınırı uygula.
     detections = detections[:max_stones]
 
+    _vlog(
+        "max_new_tokens=%d gen_tokens=%d subject=%r objects_cap=%d early_stop_seg=%s",
+        max_new_tokens,
+        len(gen_ids),
+        subject,
+        max_stones,
+        max_stones <= 1,
+    )
+    _vlog("gen_ids=%s", "[" + ", ".join(str(i) for i in gen_ids) + "]")
+    _vlog("cevap=%s", vlm_reply)
+    _vlog("bboxes_raw=%s", _format_bboxes_raw(raw))
+    _vlog("bbox_keep=%d", len(detections))
+
     if not detections:
-        logger.info("AI detection returned no centers")
-        return objects, out, text_prompt
+        _vlog("AI detection returned no centers")
+        return objects, out, vlm_reply
 
     for i, (xy, size) in enumerate(detections, 1):
         # VLM küçük görüntüden normalize (0-1) koordinat döndürür. Orijinal
-        # görüntüye geri ölçekle. Eski kod ``float(xy["x"]) * img_w`` kullanıyordu
-        # ama VLM koordinatları 0-1 normalize olduğu için ``img_w`` değil küçük
-        # görüntünün genişliği ile çarpmak gerekir — ama normalize olduğu için
-        # direkt orijinal boyutla çarp doğru olur.
+        # görüntüye geri ölçekle.
         cx = int(float(xy["x"]) * img_w)
         cy = int(float(xy["y"]) * img_h)
 
-        roi_half_x = 40
-        roi_half_y = 40
+        # VLM bbox (tam boyut) — çizim + object meta
+        box_w = 80.0
+        box_h = 80.0
         if size is not None:
             try:
-                box_w = abs(float(size["w"])) * img_w
-                box_h = abs(float(size["h"])) * img_h
-                if box_w >= 4 and box_h >= 4:
-                    roi_half_x = int(np.clip(box_w * 0.7, 24, 120))
-                    roi_half_y = int(np.clip(box_h * 0.7, 24, 120))
+                bw = abs(float(size["w"])) * img_w
+                bh = abs(float(size["h"])) * img_h
+                if bw >= 4 and bh >= 4:
+                    box_w, box_h = bw, bh
             except (TypeError, ValueError):
                 pass
 
+        bx1 = max(0, int(round(cx - box_w / 2)))
+        by1 = max(0, int(round(cy - box_h / 2)))
+        bx2 = min(img_w, int(round(cx + box_w / 2)))
+        by2 = min(img_h, int(round(cy + box_h / 2)))
+
+        # Açı ROI: bbox'tan biraz geniş/dar (önceki davranış)
+        roi_half_x = int(np.clip(box_w * 0.7, 24, 120))
+        roi_half_y = int(np.clip(box_h * 0.7, 24, 120))
         x1 = max(0, cx - roi_half_x)
         y1 = max(0, cy - roi_half_y)
         x2 = min(img_w, cx + roi_half_x)
@@ -496,8 +615,10 @@ def ai_snapshot_detect(
         )
 
         if draw:
+            # VLM hesaplanan bbox
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), COL_BBOX, 2)
             cv2.circle(out, (cx, cy), 5, COL_CENTER, -1)
-            length = max(10, min(roi_half_x, roi_half_y) - 5)
+            length = max(10, min(int(box_w), int(box_h)) // 2 - 5)
             rad = math.radians(angle)
             cv2.arrowedLine(
                 out, (cx, cy),
@@ -506,7 +627,7 @@ def ai_snapshot_detect(
             )
             label = f"#{i}  {int(round(angle))}"
             tw, th = cv2.getTextSize(label, FONT, 0.4, 1)[0]
-            lx, ly = cx - tw // 2, max(th + 6, cy - roi_half_y - 8)
+            lx, ly = cx - tw // 2, max(th + 6, by1 - 6)
             cv2.rectangle(out, (lx - 2, ly - th - 3), (lx + tw + 2, ly + 4), (0, 0, 0), -1)
             cv2.putText(out, label, (lx, ly), FONT, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
 
@@ -514,12 +635,15 @@ def ai_snapshot_detect(
             "id": i, "index": i,
             "x": float(cx), "y": float(cy),
             "cx": cx, "cy": cy,
+            "w": int(round(box_w)),
+            "h": int(round(box_h)),
+            "area": int(round(box_w * box_h)),
             "angle": round(angle, 1),
             "score": 1.0,
         })
 
     # For now just return — once we see the log output we'll parse correctly
-    return objects, out, text_prompt
+    return objects, out, vlm_reply
 
 @dataclass
 class Stone:
@@ -537,19 +661,22 @@ def detect_all(
     *,
     homography: np.ndarray | None = None,
     cal_dir=None,
-    max_stones: int = _DEFAULT_MAX_STONES,
+    max_stones: int | None = None,
 ) -> list[Stone]:
+    from app.config.settings import load_settings
     from app.vision.calibration import load_homography, pixel_to_robot
     if homography is None and cal_dir is not None:
         homography = load_homography(cal_dir)
 
+    live = load_settings()
+    stones_limit = max_stones if max_stones is not None else live.vlm_max_stones
     is_symmetric = template.is_symmetric if hasattr(template, "is_symmetric") else True
     objects, _, _ = ai_snapshot_detect(
         frame,
-        prompt="stone",
+        prompt=live.vlm_prompt,
         draw=False,
         is_symmetric=is_symmetric,
-        max_stones=max_stones,
+        max_stones=stones_limit,
     )
     
     stones = []

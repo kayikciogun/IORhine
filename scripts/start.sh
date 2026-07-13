@@ -29,6 +29,7 @@ DEV_MODE=0
 
 RUNTIME_PID=""
 FRONTEND_PID=""
+RUNTIME_TAIL_PID=""
 
 usage() {
   cat <<'EOF'
@@ -186,6 +187,13 @@ install_all() {
 
 cleanup() {
   local code=$?
+  if [[ -n "$RUNTIME_TAIL_PID" ]] && kill -0 "$RUNTIME_TAIL_PID" 2>/dev/null; then
+    kill "$RUNTIME_TAIL_PID" 2>/dev/null || true
+    wait "$RUNTIME_TAIL_PID" 2>/dev/null || true
+  fi
+  # Orphan tail|grep kalanları (önceki Ctrl+C → çift satır sebebi)
+  pkill -f "tail -n 0 -F ${LOG_DIR}/runtime.log" 2>/dev/null || true
+  pkill -f "io_cam_vlm_tail.py" 2>/dev/null || true
   if [[ -n "$RUNTIME_PID" ]] && kill -0 "$RUNTIME_PID" 2>/dev/null; then
     kill "$RUNTIME_PID" 2>/dev/null || true
     wait "$RUNTIME_PID" 2>/dev/null || true
@@ -248,6 +256,7 @@ start_runtime() {
 
   (
     cd "$RUNTIME_DIR"
+    export PYTHONUNBUFFERED=1
     exec uvicorn app.main:app $reload_flag --host 0.0.0.0 --port "$RUNTIME_PORT"
   ) >>"$LOG_DIR/runtime.log" 2>&1 &  # P2-C25: ``>`` → ``>>`` append
   RUNTIME_PID=$!
@@ -285,6 +294,32 @@ print_banner() {
 Durdurmak için Ctrl+C
 
 EOF
+  # Dev: tek process ile VLM satırlarını terminale yansıt (pipe orphan → çift satır yok).
+  if [[ "$DEV_MODE" -eq 1 ]] && [[ -f "$LOG_DIR/runtime.log" ]]; then
+    pkill -f "tail -n 0 -F ${LOG_DIR}/runtime.log" 2>/dev/null || true
+    pkill -f "io_cam_vlm_tail.py" 2>/dev/null || true
+    ok "Terminalde yalnızca [VLM] / ERROR (tam log: ${LOG_DIR}/runtime.log)"
+    (
+      # Tek PID — kill güvenilir. İsim io_cam_vlm_tail.py (pkill için).
+      exec python3 -u -c "
+import sys, time
+path = sys.argv[1]
+# sys.argv[0] taklidi: process listesinde tanınsın
+sys.argv[0] = 'io_cam_vlm_tail.py'
+with open(path, 'r', encoding='utf-8', errors='replace') as f:
+    f.seek(0, 2)
+    while True:
+        line = f.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+        if line.startswith('[VLM]') or 'ERROR:' in line or line.startswith('Traceback') or ' CRITICAL' in line:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+" "$LOG_DIR/runtime.log"
+    ) &
+    RUNTIME_TAIL_PID=$!
+  fi
 }
 
 main() {

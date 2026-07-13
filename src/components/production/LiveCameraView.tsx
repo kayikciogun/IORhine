@@ -41,7 +41,6 @@ export default function LiveCameraView({
   const [connected, setConnected] = useState(false);
   const [fps, setFps] = useState<number | null>(null);
   const [camError, setCamError] = useState<string | null>(null);
-  const [mockFrame, setMockFrame] = useState(false);
 
   // P2-B10: batch state updates + throttle. Her frame'de ayrı setState
   // çağrısı 4 re-render tetikler; throttle ile ~66ms'de bir toplu update (~15 FPS UI).
@@ -51,7 +50,6 @@ export default function LiveCameraView({
     src: string;
     stones: DetectedStone[];
     fps: number | null;
-    mock: boolean;
   } | null>(null);
   // Blob URL leak önleme: her yeni URL'den önce eskisini revoke et.
   const blobUrlRef = useRef<string | null>(null);
@@ -85,7 +83,6 @@ export default function LiveCameraView({
           src: url,
           stones: list,
           fps: ev.fps != null ? ev.fps : null,
-          mock: ev.mock_frame === true,
         };
         const now = performance.now();
         if (now - lastUpdateRef.current >= 66) {
@@ -98,7 +95,6 @@ export default function LiveCameraView({
             setSrc(p.src);
             setStones(p.stones);
             setFps(p.fps);
-            setMockFrame(p.mock);
             // P2-B10: camError null'ı sadece error varken set et —
             // her frame'de gereksiz re-render'i önler.
             setCamError((prev) => (prev === null ? prev : null));
@@ -108,6 +104,15 @@ export default function LiveCameraView({
       onError: (msg) => {
         setCamError(msg);
         onCameraErrorRef.current?.(msg);
+        // Frame yoksa önceki (veya sahte) görüntüyü temizle.
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current);
+          blobUrlRef.current = null;
+        }
+        pendingFrameRef.current = null;
+        setSrc(null);
+        setFps(null);
+        setStones([]);
       },
     });
     // P2-B10: unmount'ta pending frame flush (son frame kaybı önlenir)
@@ -158,11 +163,9 @@ export default function LiveCameraView({
         </Badge>
       </div>
 
-      {(camError || mockFrame) && (
+      {camError && (
         <div className="absolute bottom-1.5 left-1.5 right-1.5 z-10 text-[9px] text-amber-200 bg-black/70 rounded px-1.5 py-0.5">
-          {mockFrame
-            ? '⚠ Mock frame — kamera açılamadı veya frame okunamıyor'
-            : camError}
+          {camError}
         </div>
       )}
 

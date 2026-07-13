@@ -46,6 +46,7 @@ import CalibrationPanel from '@/components/production/CalibrationPanel';
 import VisionTunePanel from '@/components/production/VisionTunePanel';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Accordion,
@@ -77,6 +78,11 @@ export default function ProductionPage() {
   const [detectedObjects, setDetectedObjects] = useState<DetectedStone[]>([]);
   const [aiSnapshotResult, setAiSnapshotResult] = useState<SnapshotDetectResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  /** Seri mod: cevap gelir gelmez yeni kare tespiti. */
+  const [serialDetect, setSerialDetect] = useState(false);
+  const [detectFps, setDetectFps] = useState<number | null>(null);
+  const serialDetectRef = useRef(false);
+  const detectFpsEmaRef = useRef(0);
   const [csvRows, setCsvRows] = useState<PlacementCsvRow[]>([]);
   const [calSummary, setCalSummary] = useState<CalibrationSummary | null>(null);
   const [glueStatus, setGlueStatus] = useState<GlueSheetStatus | null>(null);
@@ -109,23 +115,13 @@ export default function ProductionPage() {
   useEffect(() => {
     getCameraStatus()
       .then((s) => {
-        if (s.config) setCameraReady(true);
+        if (s.is_live || s.config) setCameraReady(true);
       })
       .catch(() => {});
   }, []);
 
-  const handleRunAiSnapshot = async () => {
-    setAiLoading(true);
-    try {
-      const res = await runSnapshotDetect({
-        prompt: 'stone',
-        thresh_val: 0,
-        invert_threshold: true,
-        use_pca_angle: true,
-        is_symmetric: true,
-        draw: true,
-        max_stones: 1,
-      });
+  const applySnapshotResult = useCallback(
+    (res: SnapshotDetectResult, opts: { quiet: boolean }) => {
       setAiSnapshotResult(res);
       if (res.objects) {
         setDetectedObjects(
@@ -146,16 +142,88 @@ export default function ProductionPage() {
       } else {
         setDetectedObjects([]);
       }
+      if (opts.quiet) return;
       if (!res.ok && res.error) {
         appendLog(`AI Hata: ${res.error}`);
       } else if (res.objects) {
         appendLog(`AI Snapshot: ${res.objects.length} nesne tespit edildi.`);
       }
-    } catch (err) {
-      appendLog(`Snapshot AI Tespiti Başarısız: ${err}`);
-    } finally {
-      setAiLoading(false);
+    },
+    [appendLog],
+  );
+
+  const runOneAiSnapshot = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      const quiet = opts?.quiet === true;
+      setAiLoading(true);
+      const t0 = performance.now();
+      try {
+        const res = await runSnapshotDetect({
+          thresh_val: 0,
+          invert_threshold: true,
+          use_pca_angle: true,
+          is_symmetric: true,
+          draw: true,
+        });
+        applySnapshotResult(res, { quiet });
+        const elapsed = (performance.now() - t0) / 1000;
+        if (res.ok && elapsed > 0.001) {
+          const inst = 1 / elapsed;
+          detectFpsEmaRef.current =
+            detectFpsEmaRef.current <= 0
+              ? inst
+              : detectFpsEmaRef.current * 0.7 + inst * 0.3;
+          setDetectFps(detectFpsEmaRef.current);
+        }
+        return res;
+      } catch (err) {
+        if (!quiet) appendLog(`Snapshot AI Tespiti Başarısız: ${err}`);
+        throw err;
+      } finally {
+        setAiLoading(false);
+      }
+    },
+    [appendLog, applySnapshotResult],
+  );
+
+  const handleRunAiSnapshot = async () => {
+    if (serialDetect) return;
+    try {
+      await runOneAiSnapshot({ quiet: false });
+    } catch {
+      // log already handled
     }
+  };
+
+  // Seri mod: cevap geldikçe sürekli yeni frame tespiti
+  useEffect(() => {
+    serialDetectRef.current = serialDetect;
+    if (!serialDetect) return;
+    let cancelled = false;
+    (async () => {
+      while (!cancelled && serialDetectRef.current) {
+        try {
+          await runOneAiSnapshot({ quiet: true });
+        } catch {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [serialDetect, runOneAiSnapshot]);
+
+  const handleSerialToggle = (on: boolean) => {
+    if (on) {
+      detectFpsEmaRef.current = 0;
+      setDetectFps(null);
+      appendLog('Seri tespit açıldı');
+    } else {
+      appendLog('Seri tespit kapatıldı');
+    }
+    setSerialDetect(on);
   };
 
   const refreshAux = useCallback(async () => {
@@ -453,6 +521,8 @@ export default function ProductionPage() {
               detectedCount={detectedObjects.length}
               cameraReady={cameraReady}
               aiLoading={aiLoading}
+              serialDetect={serialDetect}
+              detectFps={detectFps}
             />
           </div>
 
@@ -468,18 +538,42 @@ export default function ProductionPage() {
               />
             </div>
 
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              disabled={aiLoading}
-              onClick={handleRunAiSnapshot}
-              className="h-7 px-3 text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow-md shadow-purple-900/30 shrink-0 flex items-center gap-1.5 ml-auto"
-              title="Tek kare AI tespiti"
-            >
-              <span className="inline-block w-2 h-2 rounded-full bg-purple-300 animate-pulse" />
-              {aiLoading ? 'Analiz Ediliyor...' : 'Kare Al'}
-            </Button>
+            <div className="flex items-center gap-2.5 ml-auto shrink-0">
+              <label
+                className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none"
+                title="Açıkken cevap geldikçe yeni kare alınır"
+              >
+                <Switch
+                  checked={serialDetect}
+                  onCheckedChange={handleSerialToggle}
+                  disabled={loading || !runtimeOnline}
+                  className="h-5 w-9 data-[state=checked]:bg-purple-600 [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
+                />
+                <span className={serialDetect ? 'text-purple-300 font-medium' : ''}>
+                  Seri
+                </span>
+              </label>
+              {serialDetect && detectFps != null && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] h-5 px-1.5 tabular-nums border-purple-500/40 text-purple-200"
+                >
+                  {detectFps.toFixed(1)} FPS
+                </Badge>
+              )}
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={aiLoading || serialDetect}
+                onClick={handleRunAiSnapshot}
+                className="h-7 px-3 text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow-md shadow-purple-900/30 flex items-center gap-1.5"
+                title={serialDetect ? 'Seri mod açık — tek kare için kapatın' : 'Tek kare AI tespiti'}
+              >
+                <span className="inline-block w-2 h-2 rounded-full bg-purple-300 animate-pulse" />
+                {serialDetect ? 'Seri…' : aiLoading ? 'Analiz…' : 'Kare Al'}
+              </Button>
+            </div>
           </div>
 
           {/* İş kontrolü — büyük, belirgin, alt panel */}
@@ -654,6 +748,8 @@ function SnapshotHud({
   detectedCount,
   cameraReady,
   aiLoading,
+  serialDetect,
+  detectFps,
 }: {
   phase: JobPhase;
   index: number;
@@ -661,6 +757,8 @@ function SnapshotHud({
   detectedCount: number;
   cameraReady: boolean;
   aiLoading: boolean;
+  serialDetect: boolean;
+  detectFps: number | null;
 }) {
   const phaseColor =
     phase === 'running'
@@ -683,7 +781,12 @@ function SnapshotHud({
       <Badge className="bg-black/60 text-white text-[10px] border-0">
         {cameraReady ? 'Kamera bağlı' : 'Kamera seç'}
       </Badge>
-      {aiLoading && (
+      {serialDetect && (
+        <Badge className="bg-purple-700/90 text-white text-[10px] border-0">
+          Seri{detectFps != null ? ` · ${detectFps.toFixed(1)} FPS` : '…'}
+        </Badge>
+      )}
+      {aiLoading && !serialDetect && (
         <Badge className="bg-purple-700/90 text-white text-[10px] border-0">
           Analiz…
         </Badge>

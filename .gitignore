@@ -9,12 +9,12 @@ yarn-error.log*
 out/
 build/
 
-# Environment variables
+# Environment variables (örnek şablonlar tracked kalır)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+!.env.*.example
+!.env.local.example
 
 # IDE
 .vscode/
@@ -79,15 +79,41 @@ temp/
 
 # Vercel
 .vercel/
+.vercel
 
 # TypeScript
 *.tsbuildinfo
 
-# Python runtime venv
+# Python runtime
 io-cam-runtime/.venv/
+.venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
+*.egg-info/
+dist/
+*.egg
+
+# Datasets, captures, model weights (büyük / local-only)
+io-cam-runtime/datasets/
+datasets/
+*.pth
+*.pt
+*.onnx
+*.onnx.data
+*.ckpt
+*.safetensors
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.npzlite
+*.tflite
+*.bin
+captures/
+recordings/
 
 # Calibration runtime state — saha artıkları commit'lenmemeli (P1-20).
 # Default/şablon dosyalar (örn. glue_sheet.json default) elle yazılırsa
@@ -100,4 +126,3 @@ io-cam-runtime/calibration/homography.npy
 
 # IDX
 .idx/
-.vercel

@@ -109,7 +109,7 @@ async def ws_camera(websocket: WebSocket):
         try:
             camera.open()
         except Exception as e:
-            logger.warning("camera.open failed (streaming mock/last frame): %s", e)
+            logger.warning("camera.open failed: %s", e)
             await websocket.send_text(
                 json.dumps(
                     {
@@ -122,11 +122,51 @@ async def ws_camera(websocket: WebSocket):
                 )
             )
 
+        last_err_msg: str | None = None
         while True:
             t0 = time.monotonic()
-            frame = camera.capture()
             cam_err = camera.error
             status = ai_status()
+
+            # Geçerli kare yoksa sahte görüntü gönderme — sadece uyarı.
+            if not camera.is_live:
+                msg = cam_err or "Kamera frame yok"
+                if msg != last_err_msg:
+                    last_err_msg = msg
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "evt": "error",
+                                "data": {
+                                    "code": "camera",
+                                    "msg": msg,
+                                },
+                                "ai_status": status,
+                            }
+                        )
+                    )
+                await asyncio.sleep(interval)
+                continue
+
+            try:
+                frame = camera.capture()
+            except RuntimeError as e:
+                msg = str(e)
+                if msg != last_err_msg:
+                    last_err_msg = msg
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "evt": "error",
+                                "data": {"code": "camera", "msg": msg},
+                                "ai_status": status,
+                            }
+                        )
+                    )
+                await asyncio.sleep(interval)
+                continue
+
+            last_err_msg = None
 
             # Canlı stream sadece ham kamera — VLM yok.
             # Tespit yalnızca "Kare Al" → POST /api/vision/snapshot-detect ile.
@@ -180,8 +220,6 @@ async def ws_camera(websocket: WebSocket):
             }
             if cam_err:
                 meta["camera_warning"] = cam_err
-            if not camera.is_live:
-                meta["mock_frame"] = True
 
             meta_bytes = json.dumps(meta, separators=(",", ":")).encode("utf-8")
             jpg_bytes = buf.tobytes()

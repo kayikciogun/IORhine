@@ -170,7 +170,24 @@ class JobRunner:
 
                 # ── PICK (vision) ──────────────────────────────────────────────
                 await asyncio.sleep(settings.settling_ms / 1000.0)
-                frame = self.camera.capture()
+                try:
+                    frame = self.camera.capture()
+                except RuntimeError as e:
+                    await self.bus.emit(
+                        "error",
+                        {"code": "camera", "msg": str(e)},
+                    )
+                    await asyncio.sleep(settings.settling_ms / 1000.0)
+                    empty_retries += 1
+                    if empty_retries >= settings.empty_stone_retries:
+                        self.ctx.state.phase = JobPhase.ERROR
+                        self.ctx.state.message = f"camera_capture_failed after {empty_retries} retries: {e}"
+                        await self.bus.emit(
+                            "error",
+                            {"code": "camera", "msg": self.ctx.state.message},
+                        )
+                        return
+                    continue
                 # VLM henüz ready değilse detect_all boş liste döner (ai_snapshot_detect
                 # içinde ``_ai_status != "ready"`` kontrolü var). Bu durumda job'u
                 # PAUSE yapıp operatörü uyar — eski kod boş liste alıp "taş yok" sanıp

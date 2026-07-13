@@ -35,6 +35,8 @@ export interface CameraStatus {
   config: CameraSourceConfig | null;
   error: string;
   mock_hardware: boolean;
+  /** Runtime'da geçerli kare akıyor mu (son kayıtlı kamera açık). */
+  is_live?: boolean;
 }
 
 export interface MotionPort {
@@ -155,7 +157,6 @@ export type CameraEvent =
       fps?: number;
       mode?: 'fast' | 'full';
       camera_warning?: string;
-      mock_frame?: boolean;
       ai_status?: string;
     };
 

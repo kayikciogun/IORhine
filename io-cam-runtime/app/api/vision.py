@@ -74,7 +74,8 @@ async def update_vision_settings(body: VisionSettingsBody):
 
 
 class SnapshotDetectBody(BaseModel):
-    prompt: str = Field(default="stone", max_length=200)
+    # None → io-cam-runtime/.env içindeki IO_CAM_VLM_PROMPT / IO_CAM_VLM_MAX_STONES
+    prompt: str | None = Field(default=None, max_length=200)
     thresh_val: int = Field(default=0, ge=0, le=255)
     invert_threshold: bool = True
     use_pca_angle: bool = True
@@ -82,8 +83,8 @@ class SnapshotDetectBody(BaseModel):
     draw: bool = True
     block_size: int = Field(default=31, ge=3, le=101)
     c_val: int = Field(default=8, ge=-20, le=50)
-    # 1 = hızlı tek taş; daha yüksek değer çoklu tespit (daha yavaş decode).
-    max_stones: int = Field(default=1, ge=1, le=20)
+    # None → .env IO_CAM_VLM_MAX_STONES (varsayılan 1)
+    max_stones: int | None = Field(default=None, ge=1, le=20)
 
 
 @router.post("/snapshot-detect")
@@ -91,10 +92,15 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
     import asyncio
     import base64
     import cv2
+    from app.config.settings import load_settings
     from app.services import services
 
     if body is None:
         body = SnapshotDetectBody()
+
+    live = load_settings()
+    prompt = (body.prompt if body.prompt is not None else live.vlm_prompt).strip() or live.vlm_prompt
+    max_stones = body.max_stones if body.max_stones is not None else live.vlm_max_stones
 
     status = ai_status()
     if status != "ready":
@@ -108,7 +114,10 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         }
 
     camera = services.ensure_camera()
-    frame = camera.capture()
+    try:
+        frame = camera.capture()
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e), "ai_status": status}
     if frame is None or frame.size == 0:
         return {"ok": False, "error": "Kamera çerçevesi alınamadı."}
 
@@ -117,7 +126,7 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
 
         objects, out_frame, raw_text = ai_snapshot_detect(
             frame,
-            body.prompt,
+            prompt,
             thresh_val=body.thresh_val,
             invert_threshold=body.invert_threshold,
             use_pca_angle=body.use_pca_angle,
@@ -125,8 +134,11 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             draw=body.draw,
             block_size=body.block_size,
             c_val=body.c_val,
-            max_stones=body.max_stones,
+            max_stones=max_stones,
         )
+
+        # stdout → .logs/runtime.log (uvicorn logger'a güvenmeden)
+        # VLM detayı ai_detect._vlog ile runtime.log'a gidiyor — burada tekrar basma.
 
         _, buf = cv2.imencode(".jpg", out_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         image_b64 = base64.b64encode(buf).decode("ascii")
@@ -135,6 +147,8 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             "ok": True,
             "objects": objects,
             "vlm_text": raw_text,
+            "prompt": prompt,
+            "max_stones": max_stones,
             "image_base64": f"data:image/jpeg;base64,{image_b64}",
         }
     except Exception as e:
