@@ -227,13 +227,14 @@ start_runtime() {
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
   export IO_CAM_CORS_ORIGINS="http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}"
+  export OPENCV_AVFOUNDATION_SKIP_AUTH="1"
   if [[ "$MOCK_HARDWARE" -eq 1 ]]; then
     export IO_CAM_MOCK_HARDWARE=1
     warn "Mock hardware: kamera ve seri port simüle edilir"
   else
     unset IO_CAM_MOCK_HARDWARE 2>/dev/null || true
     if [[ "$(uname -s)" == "Darwin" ]]; then
-      warn "macOS: Sistem Ayarları → Gizlilik → Kamera → Terminal/Python izni gerekebilir"
+      warn "macOS: Sistem Ayarları → Gizlilik → Kamera → Terminal izni gerekebilir"
     fi
   fi
 
@@ -244,6 +245,7 @@ start_runtime() {
     reload_flag="--reload"
     warn "Dev mode: --reload açık (production'ta kullanma)"
   fi
+
   (
     cd "$RUNTIME_DIR"
     exec uvicorn app.main:app $reload_flag --host 0.0.0.0 --port "$RUNTIME_PORT"

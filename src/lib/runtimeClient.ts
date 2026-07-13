@@ -405,6 +405,22 @@ export interface SnapshotDetectResult {
   error?: string;
 }
 
+export type AiStatus =
+  | 'uninitialized'
+  | 'loading'
+  | 'warming_up'
+  | 'ready'
+  | 'error';
+
+export async function getAiStatus(
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<AiStatus> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/status`);
+  if (!res.ok) throw await extractError(res, 'getAiStatus');
+  const data = (await res.json()) as { ai_status: AiStatus };
+  return data.ai_status;
+}
+
 export async function runSnapshotDetect(
   body: {
     prompt?: string;
@@ -413,6 +429,7 @@ export async function runSnapshotDetect(
     use_pca_angle?: boolean;
     is_symmetric?: boolean;
     draw?: boolean;
+    max_stones?: number;
   } = {},
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
 ): Promise<SnapshotDetectResult> {

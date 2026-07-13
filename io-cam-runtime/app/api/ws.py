@@ -8,11 +8,10 @@ import time
 import cv2
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.config.runtime_store import get_vision
 from app.config.settings import settings
 from app.runtime.state import JobPhase
 from app.services import services
-from app.vision.ai_detect import ai_snapshot_detect
+from app.vision.ai_detect import ai_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -127,34 +126,12 @@ async def ws_camera(websocket: WebSocket):
             t0 = time.monotonic()
             frame = camera.capture()
             cam_err = camera.error
+            status = ai_status()
 
-            vis = get_vision()
-
-            def _detect():
-                objs, annotated, _ = ai_snapshot_detect(
-                    frame,
-                    prompt="stone",
-                    draw=True,
-                    block_size=vis.blur_kernel | 1,
-                    c_val=8,
-                    use_pca_angle=True,
-                )
-                return objs, annotated
-
-            try:
-                stones, annotated = await asyncio.to_thread(_detect)
-            except Exception as e:
-                logger.exception("fast_detect failed")
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "evt": "error",
-                            "data": {"code": "vision", "msg": str(e)},
-                        }
-                    )
-                )
-                await asyncio.sleep(interval)
-                continue
+            # Canlı stream sadece ham kamera — VLM yok.
+            # Tespit yalnızca "Kare Al" → POST /api/vision/snapshot-detect ile.
+            stones: list = []
+            annotated = frame
 
             # Encode + resize'i thread havuzuna al — event loop'u bloklamasın.
             # Resize: 640px'e düşür → base64 payload ~%60 küçülür, encode ~3x hızlanır.
@@ -197,8 +174,9 @@ async def ws_camera(websocket: WebSocket):
                 "evt": "frame",
                 "stones": stones,
                 "fps": round(fps_ema, 1),
-                "mode": "fast",
+                "mode": "preview",
                 "ts": int(now * 1000),
+                "ai_status": status,
             }
             if cam_err:
                 meta["camera_warning"] = cam_err

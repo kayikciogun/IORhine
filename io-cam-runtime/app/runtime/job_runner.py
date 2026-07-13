@@ -10,7 +10,7 @@ from app.motion.kinematics import FabricOffset, fabric_to_robot
 from app.runtime.csv_loader import PlacementRow
 from app.runtime.state import JobPhase
 from app.vision.calibration import load_fabric_offset, load_homography
-from app.vision.ai_detect import Stone, detect_all
+from app.vision.ai_detect import Stone, detect_all, ai_status as _ai_status_fn
 
 if TYPE_CHECKING:
     from app.glue_sheet.controller import GlueSheet
@@ -171,6 +171,27 @@ class JobRunner:
                 # ── PICK (vision) ──────────────────────────────────────────────
                 await asyncio.sleep(settings.settling_ms / 1000.0)
                 frame = self.camera.capture()
+                # VLM henüz ready değilse detect_all boş liste döner (ai_snapshot_detect
+                # içinde ``_ai_status != "ready"`` kontrolü var). Bu durumda job'u
+                # PAUSE yapıp operatörü uyar — eski kod boş liste alıp "taş yok" sanıp
+                # retry tüketiyordu. ``_ai_status_fn`` module-level referans → testler
+                # monkey-patch'leyebilir.
+                if _ai_status_fn() != "ready":
+                    self.ctx.state.phase = JobPhase.PAUSED
+                    self.ctx.state.message = (
+                        "AI model hazır değil — VLM ısınması bitene kadar bekleyin, sonra resume."
+                    )
+                    await self.bus.emit(
+                        "error",
+                        {
+                            "code": "ai_not_ready",
+                            "msg": self.ctx.state.message,
+                        },
+                    )
+                    await self.ctx.pause_event.wait()
+                    if self.ctx.stop_requested:
+                        return
+                    continue
                 stones = detect_all(frame, self.template, cal_dir=self.cal_dir)
 
                 if not stones:

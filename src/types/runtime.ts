@@ -156,6 +156,7 @@ export type CameraEvent =
       mode?: 'fast' | 'full';
       camera_warning?: string;
       mock_frame?: boolean;
+      ai_status?: string;
     };
 
 export function defaultRuntimeConfig() {

@@ -36,7 +36,14 @@ def _reset_services():
     services.ctx.stop_requested = False
     services.ctx.vacuum_fail_streak = 0
     services.ctx.pause_event.set()
+    # JobRunner pick sırasında ``_ai_status_fn()`` kontrolü yapıyor. Testlerde
+    # VLM gerçekten yüklenmediği için "ready" dönmez → job PAUSE'da takılır.
+    # Test amaçlı hep "ready" döndür; gerçek VLM davranışı ayrı test edilir.
+    import app.runtime.job_runner as _jr_mod
+    _orig_ai_status = _jr_mod._ai_status_fn
+    _jr_mod._ai_status_fn = lambda: "ready"
     yield
+    _jr_mod._ai_status_fn = _orig_ai_status
 
 
 @pytest.fixture

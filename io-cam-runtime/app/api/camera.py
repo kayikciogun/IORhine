@@ -107,6 +107,16 @@ async def select_camera(body: SelectCameraBody):
         services.camera.select_source(cfg)
         services.camera.open()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        # macOS kamera izni reddedilmiş olabilir — kullanıcıya net mesaj göster.
+        # Cihaz seçili olarak kaydedildi (save_config), izin verince tekrar
+        # deneyebilir. 400 yerine 202 ile "kabul edildi ama açılmadı" dönelim.
+        import platform
+        msg = str(e)
+        if platform.system() == "Darwin" and ("açıl" in msg.lower() or "not authorized" in msg.lower() or "0" == msg or "1" == msg):
+            msg = (
+                f"Kamera açılamadı ({e}). macOS: Sistem Ayarları > Gizlilik ve Güvenlik "
+                f"> Kamera → Terminal/Python/iTerm izin verin, sonra tekrar deneyin."
+            )
+        raise HTTPException(status_code=400, detail=msg) from e
 
     return {"ok": True, "config": cfg.to_dict()}

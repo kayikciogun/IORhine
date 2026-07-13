@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config.runtime_store import VisionConfig, get_vision, set_vision
+from app.vision.ai_detect import ai_status
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
@@ -42,6 +43,16 @@ async def get_vision_settings():
     return _vision_to_dict(get_vision())
 
 
+@router.get("/status")
+async def get_ai_status_endpoint():
+    """AI model durumunu döndürür — frontend buton disable/retry için.
+
+    ``uninitialized`` / ``loading`` / ``warming_up`` → buton disabled.
+    ``ready`` → buton aktif. ``error`` → hata mesajı + retry.
+    """
+    return {"ai_status": ai_status()}
+
+
 @router.post("/settings")
 async def update_vision_settings(body: VisionSettingsBody):
     bk = body.blur_kernel if body.blur_kernel % 2 == 1 else body.blur_kernel + 1
@@ -63,7 +74,7 @@ async def update_vision_settings(body: VisionSettingsBody):
 
 
 class SnapshotDetectBody(BaseModel):
-    prompt: str = Field(default="Locate all the stones.", max_length=200)
+    prompt: str = Field(default="stone", max_length=200)
     thresh_val: int = Field(default=0, ge=0, le=255)
     invert_threshold: bool = True
     use_pca_angle: bool = True
@@ -71,6 +82,8 @@ class SnapshotDetectBody(BaseModel):
     draw: bool = True
     block_size: int = Field(default=31, ge=3, le=101)
     c_val: int = Field(default=8, ge=-20, le=50)
+    # 1 = hızlı tek taş; daha yüksek değer çoklu tespit (daha yavaş decode).
+    max_stones: int = Field(default=1, ge=1, le=20)
 
 
 @router.post("/snapshot-detect")
@@ -82,6 +95,17 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
 
     if body is None:
         body = SnapshotDetectBody()
+
+    status = ai_status()
+    if status != "ready":
+        # VLM hazır değilse 503 yerine durum bilgisini döndür — frontend buton
+        # aktif kalsın, kullanıcı tıkladığında backend'in durumunu görsün.
+        # ``ai_snapshot_detect`` çağırmaya gerek yok (zaten boş döner).
+        return {
+            "ok": False,
+            "error": f"AI model hazır değil (durum: {status}). Lütfen bekleyin.",
+            "ai_status": status,
+        }
 
     camera = services.ensure_camera()
     frame = camera.capture()
@@ -101,6 +125,7 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             draw=body.draw,
             block_size=body.block_size,
             c_val=body.c_val,
+            max_stones=body.max_stones,
         )
 
         _, buf = cv2.imencode(".jpg", out_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])

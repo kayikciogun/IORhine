@@ -127,6 +127,9 @@ class OpenCvFrameSource(FrameSource):
     def open(self) -> None:
         import cv2
 
+        if platform.system() == "Darwin":
+            os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"
+
         with self._io_lock:
             if self._cap is not None:
                 self._cap.release()
@@ -333,11 +336,9 @@ def _scan_darwin_cameras() -> list[CameraDeviceInfo]:
     """
     macOS: ffmpeg AVFoundation index→isim eşleştirmesi + OpenCV probe.
 
-    Eski yaklaşım system_profiler/ffmpeg sırasını OpenCV index sırasıyla
-    pozisyonel olarak eşleştiriyordu; bu cihaz takma/sürücü kayıt sırası
-    farklı olduğunda yanlış isim atamasına ve eksik cihazlara yol açıyordu.
-    Yeni yaklaşım ffmpeg'in çıktısından gelen gerçek AVFoundation indeksini
-    kullanır, ardından OpenCV probe ile erişilebilirliği doğrular.
+    OpenCV kamera izni olmadan ``cv2.VideoCapture`` başarısız olur → cihazlar
+    ``available=False`` görünür. Yine de listele ve seçilebilir yap — kullanıcı
+    macOS Gizlilik ayarından izin verdikten sonra çalışır.
     """
     ffmpeg_map = _ffmpeg_avfoundation_index_names()  # {avf_index: name}
     sys_uid: dict[str, str] = {
@@ -348,6 +349,7 @@ def _scan_darwin_cameras() -> list[CameraDeviceInfo]:
     max_known = max(ffmpeg_map.keys(), default=-1)
     scan_count = max(10, max_known + 3)
 
+    # OpenCV probe — izin yoksa hepsi False döner; yine de cihazları listele.
     probed = _scan_opencv_indices(scan_count, max_consecutive_misses=4)
     probed_set: set[int] = set()
     by_index: dict[int, CameraDeviceInfo] = {}
@@ -357,7 +359,6 @@ def _scan_darwin_cameras() -> list[CameraDeviceInfo]:
         if idx < 0:
             continue
         probed_set.add(idx)
-        # ffmpeg indeksi OpenCV indeksiyle birebir eşleşir (AVFoundation)
         name = ffmpeg_map.get(idx) or f"Kamera {idx}"
         by_index[idx] = CameraDeviceInfo(
             id=f"usb:{idx}",
@@ -367,18 +368,21 @@ def _scan_darwin_cameras() -> list[CameraDeviceInfo]:
             meta={**d.meta, "unique_id": sys_uid.get(name, "")},
         )
 
-    # ffmpeg'de görünüp OpenCV ile açılamayanlar (available=False olarak ekle)
+    # ffmpeg'de görünen ama OpenCV açamayan cihazlar — macOS kamera izni
+    # olmadığında ``available=False`` oluyor. Yine de listele ve seçilebilir yap:
+    # kullanıcı seçip "Bağla" deyince ``camera.open()`` deneyecek; macOS izin
+    # penceresi açılırsa oradan izin verebilir.
     for idx, name in ffmpeg_map.items():
         if idx not in probed_set:
             by_index[idx] = CameraDeviceInfo(
                 id=f"usb:{idx}",
                 label=name,
                 kind="usb",
-                available=False,
+                available=True,  # kullanıcı deneyebilsin diye True
                 meta={
                     "index": idx,
                     "unique_id": sys_uid.get(name, ""),
-                    "hint": "AVFoundation'da görünüyor ama açılamadı; iPhone kilidini açın veya Continuity açık olsun",
+                    "hint": "OpenCV açamadı — macOS Gizlilik > Kamera > Terminal/Python izni gerekebilir",
                 },
             )
 

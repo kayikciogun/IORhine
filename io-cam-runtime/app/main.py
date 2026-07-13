@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import os
+import platform
 from contextlib import asynccontextmanager
+
+if platform.system() == "Darwin":
+    # OpenCV'nin macOS'ta AVFoundation yetki kontrolünü arka plan thread'lerinde ("can not spin main run loop from other thread") çökmek yerine atlamasını sağlar.
+    os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,17 +25,9 @@ async def lifespan(_app: FastAPI):
     apply_motion_config(settings, load_motion_config(settings.calibration_dir))
     init_runtime_store()
 
-    # VLM modelini (paligemma2-3b-mix-448-4bit) backend başlarken arka planda belleğe yükle
-    try:
-        import asyncio
-        from app.vision.ai_detect import get_ai_model
-        get_ai_model()
-    except Exception as e:
-        import logging
-        logging.getLogger("io_cam.main").warning(
-            "VLM modeli başlangıçta yüklenirken hata oluştu (daha sonra istek anında tekrar denenecek): %s", e
-        )
-
+    # Server başlar başlamaz VLM modelini arka plan thread'inde yükle ve ısıt
+    from app.vision.ai_detect import get_ai_model
+    get_ai_model()
     yield
     # Lifespan teardown: motion driver + kamera thread/VideoCapture leak'i
     # önlemek için kapat (P1-6). Kamera arka plan thread + OpenCV capture
