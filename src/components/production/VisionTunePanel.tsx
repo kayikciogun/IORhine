@@ -51,6 +51,11 @@ export default function VisionTunePanel({
                     ({Math.round(cx)}, {Math.round(cy)})
                   </span>
                   <span>{Math.round(s.angle)}°</span>
+                  <span className="text-purple-200/90">
+                    {s.orientation && s.orientation !== 'uncertain'
+                      ? s.orientation
+                      : '—'}
+                  </span>
                   <span className="text-purple-300/80">
                     {typeof s.score === 'number' ? s.score.toFixed(2) : '—'}
                   </span>

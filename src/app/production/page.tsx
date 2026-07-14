@@ -137,6 +137,8 @@ export default function ProductionPage() {
             area: o.area ?? 0,
             w: o.w,
             h: o.h,
+            orientation: o.orientation,
+            orientation_confidence: o.orientation_confidence,
           })),
         );
       } else {

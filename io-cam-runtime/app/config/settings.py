@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     vlm_prompt: str = "single black rhinestone"
     vlm_max_stones: int = Field(default=1, ge=1, le=20)
 
+    # Orientation CNN (ONNX) — VLM bbox crop → true / false / false-side
+    orientation_model_dir: Path = Field(
+        default_factory=lambda: _RUNTIME_ROOT / "datasets" / "orientation_model"
+    )
+
     rotation_axis: Literal["A", "E"] = _motion.get("rotation_axis", "A")  # type: ignore[arg-type]
     safe_z: float = _motion.get("safe_z", 5.0)
     pick_z: float = _motion.get("pick_z", 0.5)

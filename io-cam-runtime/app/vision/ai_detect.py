@@ -2,8 +2,9 @@
 AI Snapshot + OpenCV Hybrid Detection Module (app/vision/ai_detect.py)
 
 Pipeline:
-    1. Falcon-Perception detection → aux.materialize_bboxes() → [{xy, hw}, ...]
-    2. Each bbox ROI → adaptive threshold → PCA/minAreaRect → angle
+    1. Falcon-Perception (VLM) → taş merkezleri + kaba boyut
+    2. Her bbox ROI → adaptive threshold → PCA/minAreaRect → açı
+    3. VLM bbox crop → ONNX ConvNeXt → orientation (true/false/false-side)
 
 Hız: varsayılan ``max_stones=1`` → kısa prompt + düşük max_new_tokens (~20).
 Çoklu tespit için ``max_stones`` yükselt.
@@ -575,6 +576,9 @@ def ai_snapshot_detect(
         _vlog("AI detection returned no centers")
         return objects, out, vlm_reply
 
+    img_h, img_w = frame.shape[:2]
+    from app.vision.orientation_classifier import classify_orientation_onnx
+
     for i, (xy, size) in enumerate(detections, 1):
         # VLM küçük görüntüden normalize (0-1) koordinat döndürür. Orijinal
         # görüntüye geri ölçekle.
@@ -614,6 +618,15 @@ def ai_snapshot_detect(
             is_symmetric=is_symmetric,
         )
 
+        # Yön: VLM'in verdiği tam bbox crop → ONNX classifier
+        orientation, orient_conf = classify_orientation_onnx(
+            frame, bx1, by1, bx2, by2,
+        )
+        _vlog(
+            "stone#%d cx=%d cy=%d angle=%.1f orient=%s conf=%.2f",
+            i, cx, cy, angle, orientation, orient_conf,
+        )
+
         if draw:
             # VLM hesaplanan bbox
             cv2.rectangle(out, (bx1, by1), (bx2, by2), COL_BBOX, 2)
@@ -625,7 +638,8 @@ def ai_snapshot_detect(
                 (int(cx + length * math.cos(rad)), int(cy + length * math.sin(rad))),
                 COL_AXIS, 2, tipLength=0.2,
             )
-            label = f"#{i}  {int(round(angle))}"
+            orient_tag = orientation if orientation != "uncertain" else "?"
+            label = f"#{i}  {int(round(angle))}  {orient_tag}"
             tw, th = cv2.getTextSize(label, FONT, 0.4, 1)[0]
             lx, ly = cx - tw // 2, max(th + 6, by1 - 6)
             cv2.rectangle(out, (lx - 2, ly - th - 3), (lx + tw + 2, ly + 4), (0, 0, 0), -1)
@@ -639,7 +653,9 @@ def ai_snapshot_detect(
             "h": int(round(box_h)),
             "area": int(round(box_w * box_h)),
             "angle": round(angle, 1),
-            "score": 1.0,
+            "orientation": orientation,
+            "orientation_confidence": round(orient_conf, 3),
+            "score": round(orient_conf, 3) if orientation != "uncertain" else 1.0,
         })
 
     # For now just return — once we see the log output we'll parse correctly
@@ -654,6 +670,8 @@ class Stone:
     area: float = 0.0
     robot_x: float = 0.0
     robot_y: float = 0.0
+    orientation: str = "uncertain"  # true | false | false-side | uncertain
+    orientation_confidence: float = 0.0
 
 def detect_all(
     frame: np.ndarray,
@@ -691,6 +709,8 @@ def detect_all(
             score=obj["score"],
             area=obj.get("area", 0.0),
             robot_x=rx,
-            robot_y=ry
+            robot_y=ry,
+            orientation=str(obj.get("orientation", "uncertain")),
+            orientation_confidence=float(obj.get("orientation_confidence", 0.0)),
         ))
     return stones

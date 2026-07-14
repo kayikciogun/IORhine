@@ -399,12 +399,15 @@ export interface SnapshotDetectResult {
     h: number;
     area: number;
     score: number;
+    orientation?: string;
+    orientation_confidence?: number;
   }>;
   vlm_text?: string;
   prompt?: string;
   max_stones?: number;
   image_base64?: string;
   error?: string;
+  ai_status?: string;
 }
 
 export type AiStatus =

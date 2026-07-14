@@ -146,6 +146,9 @@ export interface DetectedStone {
   h?: number;
   cx?: number;
   cy?: number;
+  /** true = yüz yukarı, false = ters, false-side = yan, uncertain = model yok */
+  orientation?: 'true' | 'false' | 'false-side' | 'uncertain' | string;
+  orientation_confidence?: number;
 }
 
 export type CameraEvent =
