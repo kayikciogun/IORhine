@@ -6,7 +6,8 @@ Pipeline:
     2. Her bbox ROI → adaptive threshold → PCA/minAreaRect → açı
     3. VLM bbox crop → ONNX ConvNeXt → orientation (true/false)
 
-Hız: varsayılan ``max_stones=1`` → kısa prompt + düşük max_new_tokens (~20).
+Hız: varsayılan ``max_stones=10`` (job: sahnedeki taşları tek seferde bul,
+içlerinden face-up olanı seç). Tek taş için ``max_stones=1`` yeter.
 Çoklu tespit için ``max_stones`` yükselt.
 
 Thread-safety: inference tek bir worker thread tarafından sırada işlenir.
@@ -21,15 +22,45 @@ from __future__ import annotations
 import logging
 import math
 import queue
-import threading
 import time
 from concurrent.futures import Future
-from typing import Any
 from dataclasses import dataclass
+from typing import Any
 
 import cv2
 import numpy as np
 from PIL import Image
+
+# Re-exports and modular imports
+from app.vision.contour_geometry import (
+    _angle_distance,
+    _directed_angle,
+    _filled_contour_points,
+    contour_angle_deg,
+    normalize_angle,
+)
+from app.vision.roi_segment import _roi_angle, _split_merged_blob, _trim_to_owner
+import app.vision.vlm_worker as _worker_mod
+from app.vision.vlm_worker import (
+    _AI_DTYPE,
+    _AI_MAX_NEW_TOKENS_CAP,
+    _AI_MAX_NEW_TOKENS_SINGLE,
+    _AI_MODEL_PATH,
+    _DEFAULT_MAX_STONES,
+    _batch_to_device,
+    _format_bboxes_raw,
+    _format_vlm_tokens,
+    _max_new_tokens_for,
+    _stop_token_ids_for,
+    _vlog,
+    ai_status,
+    get_ai_model,
+)
+from app.vision.vlm_preprocess import (
+    VLM_IMG_MAX_DIM as _AI_IMG_MAX_DIM,
+    VLM_IMG_MIN_DIM as _AI_IMG_MIN_DIM,
+    resize_for_vlm,
+)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 COL_CENTER = (0, 60, 255)
@@ -39,509 +70,25 @@ COL_LABEL = (255, 255, 0)  # true / default
 COL_ORIENT_FALSE = (0, 0, 255)  # BGR kırmızı — false orientation
 COL_ORIENT_TRUE = (0, 220, 0)  # BGR yeşil — true orientation
 
-def normalize_angle(rect: tuple) -> float:
-    angle = rect[2]
-    w, h = rect[1]
-    if w < h:
-        angle += 90
-    return angle % 180
-
-def _angle_distance(a: float, b: float, period: float = 180.0) -> float:
-    """İki eksen açısı arasındaki en küçük mutlak fark."""
-    return abs((a - b + period / 2.0) % period - period / 2.0)
-
-
-def _filled_contour_points(contour: np.ndarray) -> np.ndarray:
-    """Konturun iç alanını örnekle; sınır noktası yoğunluğuna bağımlılığı kaldır."""
-    x, y, w, h = cv2.boundingRect(contour.astype(np.int32))
-    if w <= 0 or h <= 0:
-        return np.empty((0, 2), dtype=np.float64)
-    shifted = contour.astype(np.int32).copy()
-    shifted[:, 0, 0] -= x
-    shifted[:, 0, 1] -= y
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.drawContours(mask, [shifted], -1, 255, thickness=cv2.FILLED)
-    ys, xs = np.nonzero(mask)
-    return np.column_stack((xs + x, ys + y)).astype(np.float64)
-
-
-def _directed_angle(
-    points: np.ndarray,
-    centroid: np.ndarray,
-    axis: np.ndarray,
-    base_angle: float,
-) -> float:
-    """Asimetrik şeklin sivri/uzun kuyruğunu üçüncü momentle yön olarak seç.
-
-    İkinci moment yalnızca ekseni (0-180°) verir. Merkezlenmiş projeksiyonların
-    kübik momenti ise hangi uçta daha uzun kuyruk bulunduğunu kararlı biçimde
-    ayırır. Çok zayıf asimetride 360° yön fiziksel olarak belirlenemediği için
-    deterministik canonical eksen korunur.
-    """
-    projections = (points - centroid) @ axis
-    scale = float(np.sqrt(np.mean(projections * projections)))
-    if scale <= 1e-9:
-        return base_angle % 360.0
-    skew = float(np.mean((projections / scale) ** 3))
-    if abs(skew) < 0.025:
-        return base_angle % 360.0
-    if skew < 0:
-        return (base_angle + 180.0) % 360.0
-    return base_angle % 360.0
-
-def contour_angle_deg(contour: np.ndarray, is_symmetric: bool = False) -> float:
-    """Konturun kararlı ana eksen açısını görüntü koordinatlarında döndür.
-
-    CHAIN_APPROX_SIMPLE sınır noktaları eşit aralıklı değildir; doğrudan bu
-    noktalarla PCA yapmak küçük kontur değişimlerinde açıyı oynatır. Bu nedenle
-    PCA, konturun doldurulmuş alanı üzerinde yapılır.
-    """
-    if contour.size < 6 or cv2.contourArea(contour) < 1.0:
-        return 0.0
-    points = _filled_contour_points(contour)
-    if len(points) < 3:
-        return 0.0
-    centroid = points.mean(axis=0)
-    centered = points - centroid
-    cov = centered.T @ centered / len(centered)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    major = eigvecs[:, 1]
-    if major[0] < 0 or (abs(major[0]) < 1e-12 and major[1] < 0):
-        major = -major
-    pca_angle = math.degrees(math.atan2(major[1], major[0])) % 180.0
-    pca_rad = math.radians(pca_angle)
-    major = np.array([math.cos(pca_rad), math.sin(pca_rad)], dtype=np.float64)
-
-    # Kareye yakın şekillerde alan PCA'sının iki özdeğeri eşittir. Bu durumda
-    # minimum alan dikdörtgeni kenar yönünü daha iyi temsil eder.
-    anisotropy = float((eigvals[1] - eigvals[0]) / max(eigvals[1], 1e-9))
-    rect_angle = normalize_angle(cv2.minAreaRect(contour.astype(np.float32)))
-    if anisotropy < 0.08:
-        angle = rect_angle
-        rad = math.radians(angle)
-        major = np.array([math.cos(rad), math.sin(rad)], dtype=np.float64)
-    else:
-        angle = pca_angle
-        # PCA ve dikdörtgen aynı eksende ise küçük segmentasyon titreşimini azalt.
-        if _angle_distance(pca_angle, rect_angle) < 12.0:
-            delta = (rect_angle - pca_angle + 90.0) % 180.0 - 90.0
-            angle = (pca_angle + 0.2 * delta) % 180.0
-            rad = math.radians(angle)
-            major = np.array([math.cos(rad), math.sin(rad)], dtype=np.float64)
-
-    if is_symmetric:
-        return angle % 180.0
-    return _directed_angle(points, centroid, major, angle)
-
 logger = logging.getLogger("io_cam.ai_detect")
 
 
-def _vlog(msg: str, *args: Any) -> None:
-    """Stdout → runtime.log. logger.info yok (çift satır / uvicorn formatı)."""
-    text = msg % args if args else msg
-    print(f"[VLM] {text}", flush=True)
-
-_AI_MODEL_PATH = "tiiuae/Falcon-Perception"
-# 0.6B model — 300M tespit kalitesi yetersizdi (0 nesne).
-# max_dimension=512 (768 yerine).
-#
-# PyTorch/CUDA backend. BatchInferenceEngine.generate ``task="detection"``.
-# Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz.
-_AI_MAX_NEW_TOKENS_CAP = 48
-# presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
-_AI_MAX_NEW_TOKENS_SINGLE = 8
-_AI_DTYPE = "bfloat16"
-from app.vision.vlm_preprocess import (
-    VLM_IMG_MAX_DIM as _AI_IMG_MAX_DIM,
-    VLM_IMG_MIN_DIM as _AI_IMG_MIN_DIM,
-    resize_for_vlm,
-)
-_DEFAULT_MAX_STONES = 1
-_model = None
-_tokenizer = None
-_model_args = None
-_engine = None
-_device = None
-
-_ai_status = "uninitialized"  # uninitialized, loading, warming_up, ready, error
-# Worker: (Future, batch, max_new_tokens, max_stones)
-_ai_request_queue: "queue.Queue[tuple[Future | None, Any, int, int]]" = queue.Queue(maxsize=1)
-_worker_started = False
-_ai_busy_lock = threading.Lock()
-
-
-def _batch_to_device(batch: dict[str, Any]) -> dict[str, Any]:
-    """CPU batch tensor'larını worker CUDA cihazına taşı."""
-    import torch
-
-    if _device is None:
-        return batch
-    return {
-        k: (v.to(_device) if torch.is_tensor(v) else v)
-        for k, v in batch.items()
-    }
-
-
-def _max_new_tokens_for(max_stones: int) -> int:
-    """Taş sayısına göre decode bütçesi — tek taşta kısa generate = daha hızlı."""
-    n = max(1, int(max_stones))
-    if n <= 1:
-        return _AI_MAX_NEW_TOKENS_SINGLE
-    return min(_AI_MAX_NEW_TOKENS_CAP, 4 + n * 3 + 2)
-
-
-def _stop_token_ids_for(max_stones: int) -> list[int]:
-    """Tek taş: ilk ``<|seg|>`` sonrası dur — kalan taşlar için token üretme."""
-    ids: list[int] = []
-    if _tokenizer is None:
-        return ids
-    eos = getattr(_tokenizer, "eos_token_id", None)
-    if eos is not None:
-        ids.append(int(eos))
-    eoq = getattr(_tokenizer, "end_of_query_token_id", None)
-    if eoq is not None:
-        ids.append(int(eoq))
-    if max_stones <= 1:
-        seg = getattr(_tokenizer, "seg_token_id", None)
-        if seg is None:
-            try:
-                seg = _tokenizer.convert_tokens_to_ids("<|seg|>")
-            except Exception:
-                seg = None
-        if seg is not None:
-            ids.append(int(seg))
-    return ids
-
-
-def _ai_worker_thread():
-    global _model, _tokenizer, _model_args, _engine, _ai_status, _device
-    try:
-        import torch
-        from falcon_perception import load_and_prepare_model, setup_torch_config
-        from falcon_perception.batch_inference import BatchInferenceEngine
-
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "CUDA kullanılabilir değil — NVIDIA sürücüsü / torch+cu wheel gerekli. "
-                f"torch={torch.__version__}"
-            )
-
-        setup_torch_config()
-        _ai_status = "loading"
-        print(
-            f"[VLM] Falcon-Perception CUDA yukleniyor "
-            f"(device={torch.cuda.get_device_name(0)}, dtype={_AI_DTYPE})...",
-            flush=True,
-        )
-        logger.info(
-            "Falcon-Perception CUDA yükleniyor (device=%s, dtype=%s)...",
-            torch.cuda.get_device_name(0),
-            _AI_DTYPE,
-        )
-        _model, _tokenizer, _model_args = load_and_prepare_model(
-            hf_model_id=_AI_MODEL_PATH,
-            backend="torch",
-            dtype=_AI_DTYPE,
-            compile=True,
-            device="cuda",
-        )
-        _device = _model.device
-        # dtype/device gerçekten uygulandı mı? (istedik bfloat16 — sessizce fp32 kalmasın)
-        try:
-            _param = next(_model.parameters())
-            _real_dtype = _param.dtype
-            _real_device = _param.device
-        except StopIteration:
-            _real_dtype = getattr(_model, "dtype", "?")
-            _real_device = _device
-        print(
-            f"[VLM] Model dtype: {_real_dtype}  device: {_real_device}  "
-            f"(requested={_AI_DTYPE})",
-            flush=True,
-        )
-        if _real_dtype not in (torch.float16, torch.bfloat16):
-            print(
-                f"[VLM] WARNING: model dtype={_real_dtype} — fp16/bf16 degil, "
-                "CUDA path sessizce fp32 kullanıyor olabilir (2x yavaslik).",
-                flush=True,
-            )
-        # Batch engine: sadece model+tokenizer (paged engine'deki kernel_options yok).
-        _engine = BatchInferenceEngine(_model, _tokenizer)
-
-        # Ayrı warmup generate YOK — torch.compile ilk gerçek detect'te bir kez derlenir.
-        # Eski dummy warm-up dakikalarca asılı kalıp status=warming_up'da kilitliyordu.
-        _ai_status = "ready"
-        free_gib = torch.cuda.mem_get_info()[0] / (1024 ** 3)
-        print(
-            f"[VLM] READY device={_device} vram_free={free_gib:.1f} GiB "
-            "(ilk Kare Al compile icin biraz surebilir)",
-            flush=True,
-        )
-        logger.info(
-            "Falcon-Perception CUDA ready (device=%s, dtype=%s, vram=%.1f GiB free)",
-            _device,
-            _real_dtype,
-            free_gib,
-        )
-    except Exception as e:
-        print(f"[VLM] ERROR worker init failed: {e}", flush=True)
-        logger.error("AI Worker init failed: %s", e, exc_info=True)
-        _ai_status = "error"
-        return
-
-    while True:
-        future, batch, max_new_tokens, max_stones = _ai_request_queue.get()
-        if future is None:
-            break
-        try:
-            print(
-                f"[VLM] generate basliyor max_new_tokens={max_new_tokens} "
-                f"max_stones={max_stones} task=detection",
-                flush=True,
-            )
-            stop_ids = _stop_token_ids_for(max_stones)
-            t_xfer0 = time.perf_counter()
-            gpu_batch = _batch_to_device(batch)
-            t_xfer1 = time.perf_counter()
-            t_gen0 = time.perf_counter()
-            tokens, aux_outputs = _engine.generate(
-                **gpu_batch,
-                max_new_tokens=max_new_tokens,
-                temperature=0.0,
-                stop_token_ids=stop_ids or None,
-                seed=42,
-                task="detection",
-            )
-            t_gen1 = time.perf_counter()
-            xfer_sec = t_xfer1 - t_xfer0
-            gen_sec = t_gen1 - t_gen0
-            # Girdi uzunluğu: sadece generate edilen kısmı decode etmek için
-            try:
-                tok = batch.get("tokens")
-                if tok is not None:
-                    import torch
-
-                    if torch.is_tensor(tok):
-                        input_len = int(tok.shape[-1])
-                    else:
-                        input_len = int(np.asarray(tok).shape[-1])
-                else:
-                    input_len = 0
-            except Exception:
-                input_len = 0
-            print(
-                f"[TIMING] VLM generate: {gen_sec:.3f}s "
-                f"(h2d={xfer_sec:.3f}s) input_len={input_len} "
-                f"max_new_tokens={max_new_tokens} max_stones={max_stones} "
-                f"task=detection",
-                flush=True,
-            )
-            print("[VLM] generate bitti", flush=True)
-            if not future.done():
-                # tokens / aux / input_len / worker generate süresi
-                future.set_result((tokens, aux_outputs, input_len, gen_sec))
-        except Exception as e:
-            if not future.done():
-                future.set_exception(e)
-        finally:
-            _ai_request_queue.task_done()
-
-
-def _format_vlm_tokens(tokens: Any, input_len: int = 0) -> tuple[str, list[int]]:
-    """Generate edilen token'ları decode et.
-
-    Returns:
-        (decoded_text, gen_ids) — özel token'lar strip edilince metin boş olabilir;
-        asıl detection çıktısı ``bboxes_raw`` (coord/size special token'ları).
-    """
-    empty: list[int] = []
-    if tokens is None:
-        return "", empty
-    if isinstance(tokens, str):
-        return tokens.strip(), empty
-
-    try:
-        import numpy as np
-
-        try:
-            import torch
-
-            if torch.is_tensor(tokens):
-                tokens = tokens.detach().cpu().numpy()
-        except Exception:
-            pass
-
-        arr = np.asarray(tokens)
-    except Exception:
-        return str(tokens).strip(), empty
-
-    if not (getattr(arr, "dtype", None) is not None and np.issubdtype(arr.dtype, np.number)):
-        return str(tokens).strip(), empty
-
-    if arr.ndim >= 2:
-        row = arr.reshape(arr.shape[0], -1)[0]
-    else:
-        row = arr.reshape(-1)
-    pad_id = getattr(_tokenizer, "pad_token_id", 0) if _tokenizer is not None else 0
-    start = max(0, int(input_len))
-    if start < row.shape[0]:
-        row = row[start:]
-    ids = [int(x) for x in row.tolist() if int(x) != int(pad_id)]
-    if not ids:
-        return "", empty
-    text = ""
-    if _tokenizer is not None:
-        try:
-            # skip_special=False: detection special token'ları da görünsün
-            text = _tokenizer.decode(ids, skip_special_tokens=False).strip()
-        except Exception:
-            text = ""
-    if not text:
-        text = "[" + ", ".join(str(i) for i in ids) + "]"
-    return text, ids
-
-
-def _format_bboxes_raw(raw: Any) -> str:
-    """bboxes_raw log satırı — float'ları 2 ondalığa yuvarla (JSON dump kısaltması)."""
-
-    def _round(obj: Any) -> Any:
-        if isinstance(obj, float):
-            return round(obj, 2)
-        if isinstance(obj, dict):
-            return {k: _round(v) for k, v in obj.items()}
-        if isinstance(obj, (list, tuple)):
-            return [_round(v) for v in obj]
-        # numpy skaler
-        try:
-            import numpy as np
-
-            if isinstance(obj, np.floating):
-                return round(float(obj), 2)
-        except Exception:
-            pass
-        return obj
-
-    try:
-        import json
-
-        return json.dumps(_round(raw), ensure_ascii=False, default=str)
-    except Exception:
-        return repr(raw)
-
-def get_ai_model():
-    """Backward-compatible entry point used by other modules."""
-    global _worker_started
-    if not _worker_started:
-        _worker_started = True
-        threading.Thread(target=_ai_worker_thread, daemon=True).start()
-    return _model, _tokenizer, _model_args
-
-def ai_status() -> str:
-    """AI model durumunu döndürür — frontend'de buton disable/retry için."""
-    return _ai_status
-
-
-def _roi_angle(
-    frame: np.ndarray,
-    x1: int, y1: int, x2: int, y2: int,
-    *,
-    thresh_val: int = 0,
-    block_size: int = 31,
-    c_val: int = 8,
-    invert: bool = True,
-    use_pca: bool = True,
-    is_symmetric: bool = True,
-) -> float:
-    """ROI içindeki merkeze en uygun taşı segmentleyip açısını döndür."""
-    roi = frame[y1:y2, x1:x2]
-    if roi.size == 0:
-        return 0.0
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    h, w = gray.shape[:2]
-    roi_area = float(h * w)
-    if roi_area <= 0:
-        return 0.0
-
-    max_block = min(h, w)
-    if max_block % 2 == 0:
-        max_block -= 1
-    adaptive_block = max(3, min(int(block_size) | 1, max_block))
-    preferred = cv2.THRESH_BINARY_INV if invert else cv2.THRESH_BINARY
-    opposite = cv2.THRESH_BINARY if invert else cv2.THRESH_BINARY_INV
-    masks: list[tuple[np.ndarray, float]] = []
-    masks.append((
-        cv2.adaptiveThreshold(
-            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            preferred, adaptive_block, c_val,
-        ),
-        0.35,
-    ))
-    _, otsu = cv2.threshold(blur, 0, 255, preferred | cv2.THRESH_OTSU)
-    masks.append((otsu, 0.2))
-    if thresh_val > 0:
-        _, fixed = cv2.threshold(blur, int(thresh_val), 255, preferred)
-        masks.append((fixed, 0.3))
-    # Yanlış polarity ayarında dahi taş kaybolmasın; merkez ve sınır skoru
-    # ters maskenin büyük arka plan konturunu eler.
-    _, opposite_otsu = cv2.threshold(blur, 0, 255, opposite | cv2.THRESH_OTSU)
-    masks.append((opposite_otsu, 0.0))
-
-    kernel_size = 3 if min(h, w) < 70 else 5
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
-    )
-    roi_center = np.array([w / 2.0, h / 2.0])
-    diagonal = math.hypot(w, h)
-    best_contour: np.ndarray | None = None
-    best_score = -math.inf
-
-    for mask, polarity_bonus in masks:
-        cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(
-            cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        for contour in contours:
-            area = float(cv2.contourArea(contour))
-            area_ratio = area / roi_area
-            if area < max(20.0, roi_area * 0.008) or area_ratio > 0.82:
-                continue
-            moments = cv2.moments(contour)
-            if moments["m00"] <= 0:
-                continue
-            centroid = np.array([
-                moments["m10"] / moments["m00"],
-                moments["m01"] / moments["m00"],
-            ])
-            center_distance = float(np.linalg.norm(centroid - roi_center)) / diagonal
-            if center_distance > 0.42:
-                continue
-            bx, by, bw, bh = cv2.boundingRect(contour)
-            touches_border = int(bx <= 1) + int(by <= 1)
-            touches_border += int(bx + bw >= w - 1) + int(by + bh >= h - 1)
-            hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
-            solidity = area / max(hull_area, 1.0)
-            contains_center = cv2.pointPolygonTest(
-                contour, (float(roi_center[0]), float(roi_center[1])), False
-            ) >= 0
-            score = (
-                polarity_bonus
-                + (1.5 if contains_center else 0.0)
-                + min(area_ratio, 0.35) * 2.0
-                + solidity * 0.4
-                - center_distance * 4.0
-                - touches_border * 0.55
-            )
-            if score > best_score:
-                best_score = score
-                best_contour = contour
-
-    if best_contour is None:
-        return 0.0
-    if use_pca:
-        return contour_angle_deg(best_contour.astype(np.float32), is_symmetric)
-    return normalize_angle(cv2.minAreaRect(best_contour))
+def __getattr__(name: str) -> Any:
+    """Delegate dynamic/mutable module-level variables to vlm_worker."""
+    if name in (
+        "_ai_status",
+        "_model",
+        "_tokenizer",
+        "_model_args",
+        "_engine",
+        "_device",
+        "_ai_request_queue",
+        "_worker_started",
+        "_ai_busy_lock",
+        "_ai_worker_thread",
+    ):
+        return getattr(_worker_mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def ai_snapshot_detect(
@@ -566,12 +113,12 @@ def ai_snapshot_detect(
 
     get_ai_model()  # Arka plan thread'ini baslatir (eger baslamamissa)
 
-    if _ai_status != "ready":
-        print(f"[VLM] skip — status={_ai_status} (henuz hazir degil)", flush=True)
+    if _worker_mod._ai_status != "ready":
+        print(f"[VLM] skip — status={_worker_mod._ai_status} (henuz hazir degil)", flush=True)
         if draw:
             h, w = out.shape[:2]
             cv2.rectangle(out, (0, 0), (w, 80), (0, 0, 0), -1)
-            cv2.putText(out, f"AI Model Status: {_ai_status.upper()} (Please wait...)", (20, 50), FONT, 1.2, (0, 255, 255), 3)
+            cv2.putText(out, f"AI Model Status: {_worker_mod._ai_status.upper()} (Please wait...)", (20, 50), FONT, 1.2, (0, 255, 255), 3)
         return objects, out, ""
 
     from falcon_perception import build_prompt_for_task
@@ -585,9 +132,9 @@ def ai_snapshot_detect(
     subject = (prompt or "").strip() or "stone"
     text_prompt = build_prompt_for_task(subject, "detection")
     max_new_tokens = _max_new_tokens_for(max_stones)
-    max_length = min(4096, int(getattr(_model_args, "max_seq_len", 4096)))
+    max_length = min(4096, int(getattr(_worker_mod._model_args, "max_seq_len", 4096)))
     batch = process_batch_and_generate(
-        _tokenizer,
+        _worker_mod._tokenizer,
         [(pil_image, text_prompt)],
         max_length=max_length,
         min_dimension=_AI_IMG_MIN_DIM,
@@ -600,27 +147,17 @@ def ai_snapshot_detect(
         flush=True,
     )
 
-    # Submit to background thread and wait for result via Future.
-    # Eski ``id(batch)`` + busy-wait ``time.sleep(0.01)`` race-condition'ydı:
-    # Python ``id()`` GC sonrası reuse edebilir, iki batch aynı id'ye çarpışıp
-    # birbirinin sonucunu okuyordu. Future ile tek sonuç-gönderim garantili.
-    # ``queue.Queue(maxsize=1)`` backpressure: inference sürerken ikinci batch
-    # kuyruğa giremez → ``put`` block olur → çağıran throttle edilir.
-    #
-    # ``skip_if_busy``: ws.py canlı stream yolunda inference sürüyorsa bu frame'i
-    # atla (sonraki frame'yi bekle). Snapshot-detect (kullanıcı butonu) ise
-    # ``skip_if_busy=False`` → meşgul olsa da sıraya girip bekler.
     future: "Future[Any]" = Future()
     if skip_if_busy:
         # Non-blocking put: queue doluysa ``queue.Full`` → bu frame atlanır.
         try:
-            _ai_request_queue.put_nowait((future, batch, max_new_tokens, max_stones))
+            _worker_mod._ai_request_queue.put_nowait((future, batch, max_new_tokens, max_stones))
         except queue.Full:
             return objects, out, text_prompt
     else:
         # Blocking put — snapshot/job için önceki iş bitsin (varsayılan 60s).
         try:
-            _ai_request_queue.put(
+            _worker_mod._ai_request_queue.put(
                 (future, batch, max_new_tokens, max_stones),
                 timeout=busy_timeout_s,
             )
@@ -725,6 +262,12 @@ def ai_snapshot_detect(
     img_h, img_w = frame.shape[:2]
     from app.vision.orientation_classifier import classify_orientation_onnx
 
+    # Tüm taşların merkezleri — değen taşlarda kontur ayrımı (Voronoi) için
+    # her taşın kendi merkezini komşularından ayırt edebilmemiz gerekiyor.
+    all_centers = [
+        (float(xy["x"]) * img_w, float(xy["y"]) * img_h) for xy, _ in detections
+    ]
+
     angle_total = 0.0
     classify_total = 0.0
     for i, (xy, size) in enumerate(detections, 1):
@@ -732,6 +275,7 @@ def ai_snapshot_detect(
         # görüntüye geri ölçekle.
         cx = int(float(xy["x"]) * img_w)
         cy = int(float(xy["y"]) * img_h)
+        other_centers = [c for j, c in enumerate(all_centers) if j != i - 1]
 
         # VLM bbox (tam boyut) — çizim + object meta
         box_w = 80.0
@@ -750,21 +294,45 @@ def ai_snapshot_detect(
         bx2 = min(img_w, int(round(cx + box_w / 2)))
         by2 = min(img_h, int(round(cy + box_h / 2)))
 
-        # Açı ROI: bbox'tan biraz geniş/dar (önceki davranış)
-        roi_half_x = int(np.clip(box_w * 0.7, 24, 120))
-        roi_half_y = int(np.clip(box_h * 0.7, 24, 120))
-        x1 = max(0, cx - roi_half_x)
-        y1 = max(0, cy - roi_half_y)
-        x2 = min(img_w, cx + roi_half_x)
-        y2 = min(img_h, cy + roi_half_y)
-
+        # Açı ROI: VLM'in verdiği bbox'ın kendisi — büyütme/küçültme/sabit
+        # tavan yok. Eski (×0.7, clip 24-120) yaklaşımı büyük taşları ROI'ye
+        # sıkıştırıp kenar temasından eleniyordu (bkz. sabit angle=0.0 kaçağı).
+        #
+        # Yakın/değen taşlarda ROI bbox'ları örtüşünce Canny komşu taşların
+        # kenarlarını da algılıyordu. Çözüm: ROI boyutunda Voronoi maskesi
+        # hesaplayıp Canny'nin EDGE MAP'ine uygula (girdiye değil).
+        # Böylece:
+        #  - Girdi piksel gradyanları bozulmaz → yapay Canny kenarı yok.
+        #  - Komşu taşa ait kenarlar edge map'ten siliniyor.
+        #  - Maske yalnızca ROI pikselleri üzerinde hesaplanıyor (hızlı).
         t_a = time.perf_counter()
+        roi_voronoi_mask: np.ndarray | None = None
+        if other_centers:
+            _roi_h = by2 - by1
+            _roi_w = bx2 - bx1
+            # ROI'nin frame-koordinatlarındaki ızgara (sadece ROI kadar piksel)
+            _ys_r, _xs_r = np.mgrid[by1:by2, bx1:bx2]
+            _own_dist_sq = (_xs_r - cx) ** 2 + (_ys_r - cy) ** 2
+            _other_min_dist_sq = np.full((_roi_h, _roi_w), np.inf, dtype=np.float64)
+            for _ox, _oy in other_centers:
+                _other_min_dist_sq = np.minimum(
+                    _other_min_dist_sq,
+                    (_xs_r - _ox) ** 2 + (_ys_r - _oy) ** 2,
+                )
+            roi_voronoi_mask = (_own_dist_sq <= _other_min_dist_sq).astype(np.uint8) * 255
+            print(
+                f"[VORONOI] stone {i}: edge-map maskeli (komsu={len(other_centers)})",
+                flush=True,
+            )
         angle = _roi_angle(
-            frame, x1, y1, x2, y2,
+            frame, bx1, by1, bx2, by2,
             thresh_val=thresh_val,
             block_size=block_size, c_val=c_val,
             invert=invert_threshold, use_pca=use_pca_angle,
             is_symmetric=is_symmetric,
+            own_center=(float(cx), float(cy)),
+            other_centers=other_centers,
+            voronoi_mask=roi_voronoi_mask,
         )
         t_b = time.perf_counter()
 
@@ -787,8 +355,9 @@ def ai_snapshot_detect(
         )
 
         if draw:
-            # VLM hesaplanan bbox
-            cv2.rectangle(out, (bx1, by1), (bx2, by2), COL_BBOX, 2)
+            # VLM hesaplanan bbox — orientation false ise kırmızı çiz
+            box_color = COL_ORIENT_FALSE if orientation == "false" else COL_BBOX
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), box_color, 2)
             cv2.circle(out, (cx, cy), 5, COL_CENTER, -1)
             length = max(10, min(int(box_w), int(box_h)) // 2 - 5)
             rad = math.radians(angle)
@@ -839,6 +408,7 @@ def ai_snapshot_detect(
     )
     return objects, out, vlm_reply
 
+
 @dataclass
 class Stone:
     x: float
@@ -850,6 +420,7 @@ class Stone:
     robot_y: float = 0.0
     orientation: str = "uncertain"  # true | false | uncertain
     orientation_confidence: float = 0.0
+
 
 def detect_all(
     frame: np.ndarray,
@@ -874,7 +445,7 @@ def detect_all(
         is_symmetric=is_symmetric,
         max_stones=stones_limit,
     )
-    
+
     stones = []
     for obj in objects:
         rx, ry = float(obj["cx"]), float(obj["cy"])

@@ -36,11 +36,15 @@ _load_failed = False
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
 
-# "true" yalnızca modelin yüksek emin olduğu durumlarda kabul edilir; altında
-# kalan tahminler "false" sayılır (yanlış "true" pahalı — taş yanlış yöne
-# yapıştırılır). "false" tarafı emniyetten bağımsız — az emin de olsa false
-# kabul etmek daha güvenli (en kötü ihtimalle gereksiz çevirme).
-_TRUE_CONFIDENCE_THRESHOLD = 0.7
+# Train_orientation._CLAHETransform ile aynı parametreler — train/infer parity.
+_CLAHE_CLIP = 2.5
+_CLAHE_TILE = (8, 8)
+
+# Asimetrik emniyet: yanlış "true" pahalı (taş yanlış yöne yapıştırılır),
+# yanlış "false" daha ucuz (gereksiz çevirme). Training class-weight'leriyle
+# değil inference threshold ile kontrol edilir — yeniden eğitmeden ayarlanır.
+_TRUE_CONFIDENCE_THRESHOLD = 0.80   # true demek için yüksek emin ol
+_FALSE_CONFIDENCE_THRESHOLD = 0.50  # false demek için daha az emin yeterli
 
 
 def _resolve_model_dir(model_dir: Path | str | None = None) -> Path:
@@ -134,11 +138,24 @@ def _load_orientation_model(model_dir: Path | str | None = None) -> bool:
     return True
 
 
+def _normalize_lighting(bgr: np.ndarray) -> np.ndarray:
+    """CLAHE — Train_orientation._CLAHETransform ile aynı clip/tile."""
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=_CLAHE_CLIP, tileGridSize=_CLAHE_TILE)
+    merged = cv2.merge([clahe.apply(l), a, b])
+    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+
 def _preprocess_crop(crop_bgr: np.ndarray) -> np.ndarray:
-    """OpenCV BGR crop → (1, 3, H, W) float32, ImageNet normalize."""
-    rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-    resized = cv2.resize(rgb, (_img_size, _img_size), interpolation=cv2.INTER_LINEAR)
-    chw = resized.astype(np.float32).transpose(2, 0, 1) / 255.0
+    """OpenCV BGR crop → resize → CLAHE → (1, 3, H, W) float32 ImageNet.
+
+    Sıra Train_orientation val_tf ile aynı: Resize → CLAHE (train/infer parity).
+    """
+    resized = cv2.resize(crop_bgr, (_img_size, _img_size), interpolation=cv2.INTER_LINEAR)
+    lit = _normalize_lighting(resized)
+    rgb = cv2.cvtColor(lit, cv2.COLOR_BGR2RGB)
+    chw = rgb.astype(np.float32).transpose(2, 0, 1) / 255.0
     normalized = (chw - _MEAN) / _STD
     return normalized[np.newaxis, ...].astype(np.float32)
 
@@ -151,10 +168,14 @@ def classify_orientation_onnx(
     by2: int,
     *,
     model_dir: Path | str | None = None,
+    true_confidence_threshold: float = _TRUE_CONFIDENCE_THRESHOLD,
+    false_confidence_threshold: float = _FALSE_CONFIDENCE_THRESHOLD,
 ) -> tuple[str, float]:
     """VLM bbox crop → (orientation sınıfı, confidence).
 
-    Model yoksa ``(\"uncertain\", 0.0)`` — çağıran açı-only davranışa düşer.
+    Model yoksa veya confidence eşiğin altındaysa ``(\"uncertain\", conf)`` —
+    çağıran açı-only / skip davranışa düşer. ``true`` için eşik daha yüksek,
+    ``false`` için daha düşük (asimetrik maliyet).
     """
     if not _load_orientation_model(model_dir):
         return "uncertain", 0.0
@@ -180,10 +201,12 @@ def classify_orientation_onnx(
     probs = exp / exp.sum()
     pred_idx = int(np.argmax(probs))
     confidence = float(probs[pred_idx])
-    label = _class_names[pred_idx]
+    pred_class = _class_names[pred_idx]
 
-    # Düşük emniyetli "true" → "false"a düşür (yanlış true'nun maliyeti yüksek).
-    if label == "true" and confidence < _TRUE_CONFIDENCE_THRESHOLD:
-        return "false", confidence
+    # Emin değilse true/false deme — güvenli tarafta kal (uncertain).
+    if pred_class == "true" and confidence < true_confidence_threshold:
+        return "uncertain", confidence
+    if pred_class == "false" and confidence < false_confidence_threshold:
+        return "uncertain", confidence
 
-    return label, confidence
+    return pred_class, confidence

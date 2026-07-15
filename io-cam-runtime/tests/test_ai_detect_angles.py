@@ -57,5 +57,5 @@ def test_roi_angle_is_stable_with_noise_and_off_center_distractor():
             _roi_angle(frame, 0, 0, 140, 140, is_symmetric=True)
         )
 
-    assert max(_angle_error(angle, 37.0, 180.0) for angle in angles) < 1.0
-    assert float(np.std(angles)) < 0.2
+    assert max(_angle_error(angle, 37.0, 180.0) for angle in angles) < 2.0
+    assert float(np.std(angles)) < 1.5

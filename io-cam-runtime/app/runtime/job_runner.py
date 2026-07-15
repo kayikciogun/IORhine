@@ -26,6 +26,28 @@ def nearest_stone(stones: list[Stone], head_xy: tuple[float, float]) -> Stone:
     return min(stones, key=lambda s: (s.robot_x - hx) ** 2 + (s.robot_y - hy) ** 2)
 
 
+def select_stone_to_pick(
+    stones: list[Stone],
+    head_xy: tuple[float, float],
+    *,
+    min_true_confidence: float = 0.80,
+) -> Stone | None:
+    """Yüz-yukarı (orientation=true) ve emin taşlardan en yakını seç.
+
+    VLM tek seferde birçok taşı bulur; classifier her birine orientation verir.
+    False/uncertain taşları pick etme — aynı frame için VLM'i tekrar çağırma;
+    çağıran bir sonraki kamera karesini bekler.
+    """
+    pickable = [
+        s
+        for s in stones
+        if s.orientation == "true" and float(s.orientation_confidence) >= min_true_confidence
+    ]
+    if not pickable:
+        return None
+    return nearest_stone(pickable, head_xy)
+
+
 def shortest_delta_c(target: float, current: float) -> float:
     delta = target - current
     return ((delta + 180) % 360) - 180
@@ -231,10 +253,40 @@ class JobRunner:
                         )
                         return
                     continue
-                empty_retries = 0
 
+                # Tek VLM çağrısıyla bulunan taşlar arasından face-up seç.
+                # False/uncertain varsa aynı sahneyi VLM'le tekrar taramayız —
+                # yeni frame bekleriz (settle + capture sonraki turda).
                 head = self.motion.position()
-                stone = nearest_stone(stones, (head[0], head[1]))
+                stone = select_stone_to_pick(stones, (head[0], head[1]))
+                if stone is None:
+                    await self.bus.emit(
+                        "operator_feed_required",
+                        {
+                            "reason": "no_true_orientation",
+                            "detected": len(stones),
+                            "orientations": [s.orientation for s in stones],
+                        },
+                    )
+                    await asyncio.sleep(settings.settling_ms / 1000.0)
+                    empty_retries += 1
+                    if empty_retries >= settings.empty_stone_retries:
+                        self.ctx.state.phase = JobPhase.ERROR
+                        self.ctx.state.message = (
+                            f"no_true_orientation_stone after {empty_retries} frames "
+                            f"at row {i} (detected={len(stones)})"
+                        )
+                        await self.bus.emit(
+                            "error",
+                            {
+                                "code": "no_true_orientation_stone",
+                                "msg": self.ctx.state.message,
+                            },
+                        )
+                        return
+                    continue
+
+                empty_retries = 0
                 pick_x, pick_y = stone.robot_x, stone.robot_y
 
                 # Pick Z: taş yüzeyine inmek için kumaş Z + taş kalınlığı

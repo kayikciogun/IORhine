@@ -178,8 +178,12 @@ async def test_vacuum_pick_failed_streak_terminates(monkeypatch):
 
     import app.runtime.job_runner as jr_mod
 
-    # detect_all → tek taş (her çağrıda 1)
-    stone = jr_mod.Stone(x=10, y=20, angle=0, score=0, area=100, robot_x=10.0, robot_y=20.0)
+    # detect_all → tek taş (her çağrıda 1) — face-up gerekli (select_stone_to_pick)
+    stone = jr_mod.Stone(
+        x=10, y=20, angle=0, score=0.9, area=100,
+        robot_x=10.0, robot_y=20.0,
+        orientation="true", orientation_confidence=0.95,
+    )
 
     def _det(*args, **kwargs):
         return [stone]
@@ -209,7 +213,11 @@ async def test_glue_sheet_exhausted_resume_requires_reset(monkeypatch):
 
     import app.runtime.job_runner as jr_mod
 
-    stone = jr_mod.Stone(x=10, y=20, angle=0, score=0, area=100, robot_x=10, robot_y=20)
+    stone = jr_mod.Stone(
+        x=10, y=20, angle=0, score=0.9, area=100,
+        robot_x=10, robot_y=20,
+        orientation="true", orientation_confidence=0.95,
+    )
 
     def _det(*args, **kwargs):
         return [stone]
@@ -261,3 +269,81 @@ def _tmp_cal_dir():
 
     p = Path(tempfile.mkdtemp(prefix="iorhine_test_cal_"))
     return p
+
+def test_select_stone_to_pick_prefers_true_near_head():
+    from app.runtime.job_runner import select_stone_to_pick
+    from app.vision.ai_detect import Stone
+
+    far_true = Stone(
+        x=0, y=0, angle=0, score=0.9, area=1,
+        robot_x=100, robot_y=100,
+        orientation="true", orientation_confidence=0.95,
+    )
+    near_false = Stone(
+        x=0, y=0, angle=0, score=0.9, area=1,
+        robot_x=1, robot_y=1,
+        orientation="false", orientation_confidence=0.99,
+    )
+    near_true = Stone(
+        x=0, y=0, angle=0, score=0.9, area=1,
+        robot_x=5, robot_y=5,
+        orientation="true", orientation_confidence=0.88,
+    )
+    low_conf = Stone(
+        x=0, y=0, angle=0, score=0.5, area=1,
+        robot_x=2, robot_y=2,
+        orientation="true", orientation_confidence=0.5,
+    )
+    picked = select_stone_to_pick(
+        [far_true, near_false, near_true, low_conf],
+        (0.0, 0.0),
+        min_true_confidence=0.80,
+    )
+    assert picked is near_true
+
+
+def test_select_stone_to_pick_none_when_only_false():
+    from app.runtime.job_runner import select_stone_to_pick
+    from app.vision.ai_detect import Stone
+
+    stones = [
+        Stone(
+            x=0, y=0, angle=0, score=0.9, area=1,
+            robot_x=1, robot_y=1,
+            orientation="false", orientation_confidence=0.99,
+        ),
+        Stone(
+            x=0, y=0, angle=0, score=0.5, area=1,
+            robot_x=2, robot_y=2,
+            orientation="uncertain", orientation_confidence=0.4,
+        ),
+    ]
+    assert select_stone_to_pick(stones, (0.0, 0.0)) is None
+
+
+@pytest.mark.asyncio
+async def test_no_true_orientation_retries_then_errors(monkeypatch):
+    """Sahne dolu ama hepsi false → yeni frame bekler; retry aşımında ERROR."""
+    monkeypatch.setattr(settings, "empty_stone_retries", 2)
+    monkeypatch.setattr(settings, "settling_ms", 0)
+
+    runner = _make_runner(rows=[_row(0)])
+    runner.ctx.state.phase = JobPhase.READY
+
+    import app.runtime.job_runner as jr_mod
+
+    stone = jr_mod.Stone(
+        x=10, y=20, angle=0, score=0.9, area=100,
+        robot_x=10.0, robot_y=20.0,
+        orientation="false", orientation_confidence=0.99,
+    )
+
+    def _det(*args, **kwargs):
+        return [stone]
+
+    monkeypatch.setattr(jr_mod, "detect_all", _det)
+
+    await runner.start()
+    await asyncio.wait_for(runner._task, timeout=2.0)
+    assert runner.ctx.state.phase == JobPhase.ERROR
+    assert "no_true_orientation" in (runner.ctx.state.message or "")

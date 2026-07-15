@@ -84,7 +84,8 @@ class Settings(BaseSettings):
 
     # VLM detection — .env'den canlı okunur (load_settings); frontend kodu değişmez.
     vlm_prompt: str = "single black rhinestone"
-    vlm_max_stones: int = Field(default=1, ge=1, le=20)
+    # Tek VLM çağrısında tarama limiti — saçaktaki true taşlardan biri seçilir.
+    vlm_max_stones: int = Field(default=10, ge=1, le=20)
 
     # Orientation CNN (ONNX) — VLM bbox crop → true / false
     orientation_model_dir: Path = Field(
