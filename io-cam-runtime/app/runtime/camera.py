@@ -30,11 +30,19 @@ class Camera:
         self._latest: np.ndarray | None = None
         self._latest_ts: float = 0.0
         self._lock = threading.Lock()
+        # OpenCV/DirectShow aynı anda iki open kaldırmaz — select+thread yarışını kes.
+        self._open_lock = threading.Lock()
         self._stop = threading.Event()
         self._reopen = threading.Event()
         self._thread: threading.Thread | None = None
         self._error = ""
         self._read_failures = 0
+        # Kamera açılır/değişir açılmaz ilk kareler karanlık/bulanık olabilir
+        # (otomatik pozlama/odak henüz oturmadı). Bu sayaç ``_open_source``'da
+        # sıfırlanır, her başarılı okumada artar — ``is_warm`` eşiğe ulaşana
+        # kadar VLM'e gönderilmemesi gereken kareyi işaretler.
+        self._frames_since_open = 0
+        self._warmup_frames = 5
 
     @property
     def config(self) -> CameraSourceConfig | None:
@@ -45,6 +53,8 @@ class Camera:
         # set ediyordu; çağıran kod (ws.py, calibration.py) ``open()`` başarılı
         # sanıp sahte kare ile devam ediyordu → yanıltıcı kalibrasyon. Artık
         # hatayı yeniden fırlat; thread yine de başlatılır (yeniden deneme için).
+        # select_source(deferred) ile aynı anda thread reopen yapmasın.
+        self._reopen.clear()
         try:
             self._open_source()
         except Exception as e:
@@ -57,25 +67,29 @@ class Camera:
         self._start_thread()
 
     def _open_source(self) -> None:
-        cfg = self._config
-        if cfg is None and not self.mock:
-            saved = load_saved_config(settings.calibration_dir)
-            cfg = saved or CameraSourceConfig(kind="usb", source_id="0")
-            self._config = cfg
+        with self._open_lock:
+            cfg = self._config
+            if cfg is None and not self.mock:
+                saved = load_saved_config(settings.calibration_dir)
+                cfg = saved or CameraSourceConfig(kind="usb", source_id="0")
+                self._config = cfg
 
-        if self.mock:
-            cfg = CameraSourceConfig(kind="mock", source_id="mock")
+            if self.mock:
+                cfg = CameraSourceConfig(kind="mock", source_id="mock")
 
-        self.close_source_only()
-        try:
-            self._source = create_frame_source(cfg, mock_hardware=self.mock)  # type: ignore[arg-type]
-            self._source.open()
-            with self._lock:
-                self._error = ""
-        except Exception as e:
-            with self._lock:
-                self._error = str(e)
-            raise
+            self.close_source_only()
+            time.sleep(0.05)
+            try:
+                self._source = create_frame_source(cfg, mock_hardware=self.mock)  # type: ignore[arg-type]
+                self._source.open()
+                with self._lock:
+                    self._latest = None
+                    self._error = ""
+                    self._frames_since_open = 0
+            except Exception as e:
+                with self._lock:
+                    self._error = str(e)
+                raise
 
     def close_source_only(self) -> None:
         if self._source is not None:
@@ -92,9 +106,11 @@ class Camera:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    def select_source(self, config: CameraSourceConfig) -> None:
+    def select_source(self, config: CameraSourceConfig, *, deferred: bool = True) -> None:
+        """Yeni cihaz seç. ``deferred=False``: sadece config; ``open()`` çağıran senkron açar."""
         self._config = config
-        self._reopen.set()
+        if deferred:
+            self._reopen.set()
 
     def _loop(self) -> None:
         interval = 1.0 / max(settings.camera_idle_fps, 1.0)
@@ -120,6 +136,8 @@ class Camera:
                         self._latest = frame
                         self._latest_ts = time.monotonic()
                         self._error = ""
+                        if self._frames_since_open < self._warmup_frames:
+                            self._frames_since_open += 1
                 else:
                     self._read_failures += 1
                     with self._lock:
@@ -166,6 +184,17 @@ class Camera:
         """Son geçerli kamera karesi var mı?"""
         with self._lock:
             return self._latest is not None
+
+    @property
+    def is_warm(self) -> bool:
+        """Kamera açılışından/değişiminden sonra yeterli kare okundu mu?
+
+        Otomatik pozlama/odak ilk karelerde henüz oturmamış olabilir — bu
+        sırada VLM'e gönderilen kare karanlık/bulanık gelip yanlışlıkla
+        "taş yok" (absence) sonucu üretebilir.
+        """
+        with self._lock:
+            return self._frames_since_open >= self._warmup_frames
 
     def close(self) -> None:
         self._stop.set()

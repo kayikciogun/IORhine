@@ -39,10 +39,12 @@ npm run install:all
 | http://localhost:9002/production | Üretim |
 | http://localhost:8000/health | Runtime sağlık (AI durumu dahil) |
 
-`.env.local` yoksa `scripts/start.sh` otomatik oluşturur:
+`.env` yoksa `scripts/start.sh` (veya `start.mjs`) `.env.example`'dan otomatik oluşturur. Tek dosya — frontend (`NEXT_PUBLIC_*`) ve runtime (`IO_CAM_*`) aynı `.env`'i okur:
 
 ```env
 NEXT_PUBLIC_RUNTIME_URL=http://127.0.0.1:8000
+IO_CAM_VLM_PROMPT=single black rhinestone
+IO_CAM_VLM_MAX_STONES=1
 ```
 
 macOS’ta gerçek kamera için **Sistem Ayarları → Gizlilik ve Güvenlik → Kamera** altında Terminal (veya kullandığınız IDE) izni gerekir. Yardımcı script: `io-cam-runtime/scripts/request_camera_permission.py`.

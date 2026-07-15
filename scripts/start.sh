@@ -135,16 +135,21 @@ check_prerequisites() {
 }
 
 ensure_env_local() {
-  local env_file="$ROOT/.env.local"
+  # Tek .env — frontend + runtime aynı dosyayı okur (io-cam-runtime/app/config/settings.py).
+  local env_file="$ROOT/.env"
+  local example_file="$ROOT/.env.example"
   if [[ -f "$env_file" ]]; then
-    ok ".env.local mevcut"
+    ok ".env mevcut"
     return
   fi
-  cat >"$env_file" <<EOF
-# Otomatik oluşturuldu — scripts/start.sh
+  if [[ -f "$example_file" ]]; then
+    cp "$example_file" "$env_file"
+  else
+    cat >"$env_file" <<EOF
 NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL}
 EOF
-  ok ".env.local oluşturuldu (NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL})"
+  fi
+  ok ".env oluşturuldu (NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL})"
 }
 
 install_frontend() {

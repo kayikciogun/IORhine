@@ -146,8 +146,8 @@ export interface DetectedStone {
   h?: number;
   cx?: number;
   cy?: number;
-  /** true = yüz yukarı, false = ters, false-side = yan, uncertain = model yok */
-  orientation?: 'true' | 'false' | 'false-side' | 'uncertain' | string;
+  /** true = yüz yukarı, false = ters/yan, uncertain = model yok */
+  orientation?: 'true' | 'false' | 'uncertain' | string;
   orientation_confidence?: number;
 }
 

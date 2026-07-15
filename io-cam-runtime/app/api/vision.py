@@ -107,6 +107,7 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         # VLM hazır değilse 503 yerine durum bilgisini döndür — frontend buton
         # aktif kalsın, kullanıcı tıkladığında backend'in durumunu görsün.
         # ``ai_snapshot_detect`` çağırmaya gerek yok (zaten boş döner).
+        print(f"[VLM] snapshot-detect reddedildi — status={status}", flush=True)
         return {
             "ok": False,
             "error": f"AI model hazır değil (durum: {status}). Lütfen bekleyin.",
@@ -120,6 +121,15 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         return {"ok": False, "error": str(e), "ai_status": status}
     if frame is None or frame.size == 0:
         return {"ok": False, "error": "Kamera çerçevesi alınamadı."}
+    if not camera.is_warm:
+        # Kamera yeni açıldı/değiştirildi — pozlama/odak henüz oturmadı.
+        # Bu kareyi VLM'e göndermek yanlış "taş yok" (absence) sonucuna
+        # yol açabilir; kullanıcıya net mesaj verip biraz beklemesini isteriz.
+        return {
+            "ok": False,
+            "error": "Kamera ısınıyor (pozlama/odak oturuyor) — birkaç saniye sonra tekrar deneyin.",
+            "ai_status": status,
+        }
 
     try:
         from app.vision.ai_detect import ai_snapshot_detect

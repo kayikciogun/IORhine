@@ -36,11 +36,13 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-# 1. Setup .env if it doesn't exist
-if [ ! -f ".env" ]; then
-    if [ -f ".env.example" ]; then
+# 1. Setup .env if it doesn't exist — tek .env repo kökünde (../.env)
+ROOT_ENV="../.env"
+ROOT_ENV_EXAMPLE="../.env.example"
+if [ ! -f "$ROOT_ENV" ]; then
+    if [ -f "$ROOT_ENV_EXAMPLE" ]; then
         echo "[+] .env file not found. Copying from .env.example..."
-        cp .env.example .env
+        cp "$ROOT_ENV_EXAMPLE" "$ROOT_ENV"
     else
         echo "[!] .env.example not found, skipping environment file setup."
     fi
@@ -81,13 +83,13 @@ if [ "$FORCE_MOCK" = true ]; then
     export IO_CAM_MOCK_HARDWARE=1
 else
     # Check if IO_CAM_MOCK_HARDWARE is already in .env or environment
-    if [ -f ".env" ] && grep -q "IO_CAM_MOCK_HARDWARE=1" .env; then
+    if [ -f "$ROOT_ENV" ] && grep -q "IO_CAM_MOCK_HARDWARE=1" "$ROOT_ENV"; then
         echo "[+] Running with Mock Hardware (detected in .env)"
     else
         # We can also load the rest of the .env file automatically
-        if [ -f ".env" ]; then
+        if [ -f "$ROOT_ENV" ]; then
             echo "[+] Loading environment variables from .env"
-            export $(grep -v '^#' .env | xargs)
+            export $(grep -v '^#' "$ROOT_ENV" | xargs)
         fi
     fi
 fi

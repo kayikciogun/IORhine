@@ -1,4 +1,7 @@
-"""VLM'e giden görüntü ön-işleme — ``ai_detect`` ile aynı boyutlandırma."""
+"""VLM'e giden görüntü ön-işleme — ``ai_detect`` ile aynı boyutlandırma.
+
+Cihazdan bağımsız (CPU OpenCV). Falcon CUDA yolunda da aynı ``max_dim`` kullanılır.
+"""
 from __future__ import annotations
 
 import cv2

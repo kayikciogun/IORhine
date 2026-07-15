@@ -6,6 +6,7 @@ import os
 import platform
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -99,12 +100,20 @@ class MockFrameSource(FrameSource):
 class OpenCvFrameSource(FrameSource):
     """USB path (/dev/video0) veya capture index."""
 
-    def __init__(self, source: str | int, *, use_v4l2: bool = False):
+    def __init__(
+        self,
+        source: str | int,
+        *,
+        use_v4l2: bool = False,
+        device_name: str | None = None,
+    ):
         self.source = source
         self.use_v4l2 = use_v4l2
+        self.device_name = (device_name or "").strip() or None
         self._cap = None
         self._io_lock = threading.Lock()
-        self._label = f"opencv:{source}"
+        label = self.device_name or source
+        self._label = f"opencv:{label}"
 
     def _configure_capture(self) -> None:
         """AVFoundation / Continuity Camera için kararlı ayarlar."""
@@ -123,11 +132,77 @@ class OpenCvFrameSource(FrameSource):
         except Exception:
             pass
         # İlk kare bazen boş; bir kez ısıt.
-        for _ in range(3):
-            self._cap.read()
+        for _ in range(5):
+            ok, frame = self._cap.read()
+            if ok and frame is not None:
+                break
+            time.sleep(0.05)
+
+    def _try_open_windows(self, index: int) -> Any:
+        """Windows: DSHOW indeks bazen patlar — backend fallback + isim denemesi."""
+        import cv2
+        import time
+
+        backends: list[int] = []
+        for b in (
+            getattr(cv2, "CAP_DSHOW", None),
+            getattr(cv2, "CAP_MSMF", None),
+            cv2.CAP_ANY,
+        ):
+            if b is not None and b not in backends:
+                backends.append(b)
+
+        last_err = ""
+        for backend in backends:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(index, backend)
+                if cap is not None and cap.isOpened():
+                    # En az bir okunabilir kare şart
+                    for _ in range(6):
+                        ok, frame = cap.read()
+                        if ok and frame is not None:
+                            return cap
+                        time.sleep(0.05)
+                if cap is not None:
+                    cap.release()
+            except Exception as e:
+                last_err = str(e)
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+        # Friendly name (bazı DSHOW build'lerinde index yerine)
+        if self.device_name:
+            for backend in backends:
+                cap = None
+                try:
+                    # OpenCV DSHOW: "video=<Friendly Name>"
+                    uri = f"video={self.device_name}"
+                    cap = cv2.VideoCapture(uri, backend)
+                    if cap is not None and cap.isOpened():
+                        ok, frame = cap.read()
+                        if ok and frame is not None:
+                            return cap
+                    if cap is not None:
+                        cap.release()
+                except Exception as e:
+                    last_err = str(e)
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+        raise RuntimeError(
+            f"Kamera açılamadı: index={index!r}"
+            + (f" name={self.device_name!r}" if self.device_name else "")
+            + (f" ({last_err})" if last_err else "")
+        )
 
     def open(self) -> None:
         import cv2
+        import time
 
         if platform.system() == "Darwin":
             os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"
@@ -136,6 +211,20 @@ class OpenCvFrameSource(FrameSource):
             if self._cap is not None:
                 self._cap.release()
                 self._cap = None
+                # DirectShow: release sonrası kısa gecikme — cihaz kilitli kalmasın
+                time.sleep(0.15)
+
+            if platform.system() == "Windows" and not self.use_v4l2:
+                idx: int | None = None
+                if isinstance(self.source, int):
+                    idx = self.source
+                elif isinstance(self.source, str) and self.source.isdigit():
+                    idx = int(self.source)
+                if idx is not None:
+                    self._cap = self._try_open_windows(idx)
+                    self._configure_capture()
+                    return
+
             backend = cv2.CAP_V4L2 if self.use_v4l2 else _opencv_capture_backend()
             if isinstance(self.source, str) and self.source.startswith("/dev/video"):
                 self._cap = cv2.VideoCapture(self.source, backend)
@@ -176,8 +265,10 @@ def _opencv_capture_backend() -> int:
     system = platform.system()
     if system == "Darwin" and hasattr(cv2, "CAP_AVFOUNDATION"):
         return cv2.CAP_AVFOUNDATION
-    if system == "Windows" and hasattr(cv2, "CAP_DSHOW"):
-        return cv2.CAP_DSHOW
+    # Windows: CAP_ANY genelde indeksle daha kararlı; DSHOW-only bazen
+    # ``can't be used to capture by index`` + C++ exception verir.
+    if system == "Windows":
+        return cv2.CAP_ANY
     return cv2.CAP_ANY
 
 
@@ -295,13 +386,28 @@ def _restore_stderr(devnull, saved, old_stderr) -> None:
     devnull.close()
 
 
+def _windows_dshow_device_names() -> list[str]:
+    """DirectShow dostane adlar (OpenCV DSHOW index sırası ile aynı)."""
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+
+        return list(FilterGraph().get_input_devices() or [])
+    except Exception:
+        return []
+
+
 def _scan_opencv_indices(
     max_index: int = 8,
     *,
     name_hints: list[str] | None = None,
     max_consecutive_misses: int = 2,
+    require_readable: bool = False,
 ) -> list[CameraDeviceInfo]:
-    """macOS / Windows: capture index ile tarama."""
+    """macOS / Windows: capture index ile tarama.
+
+    ``require_readable=True`` (Windows): sadece kare okunan cihazlar listelenir —
+    açılıp boş/hayalet kalan index'ler (sahte 'Kamera N') elenir.
+    """
     backend = _opencv_capture_backend()
     hints = name_hints or []
 
@@ -312,16 +418,22 @@ def _scan_opencv_indices(
     try:
         for i in range(max_index):
             ok, readable = _probe_opencv_index(i, backend=backend)
-            if ok:
+            if ok and (readable or not require_readable):
                 misses = 0
-                label = hints[i] if i < len(hints) and hints[i] else f"Kamera {i}"
+                hint = hints[i] if i < len(hints) and hints[i] else ""
+                label = hint or f"Kamera {i}"
                 found.append(
                     CameraDeviceInfo(
                         id=f"usb:{i}",
                         label=label,
                         kind="usb",
                         available=True,
-                        meta={"index": i, "readable": readable, "backend": backend},
+                        meta={
+                            "index": i,
+                            "readable": readable,
+                            "backend": backend,
+                            "name": hint or None,
+                        },
                     )
                 )
             else:
@@ -418,7 +530,15 @@ def scan_usb_devices() -> list[CameraDeviceInfo]:
             )
         return devices
     if system == "Windows":
-        return _scan_opencv_indices(8, max_consecutive_misses=3)
+        # DirectShow isimleri (Iriun / OBS / USB Webcam …) — generic "Kamera N" yerine.
+        names = _windows_dshow_device_names()
+        scan_n = max(8, len(names) + 2) if names else 8
+        return _scan_opencv_indices(
+            scan_n,
+            name_hints=names,
+            max_consecutive_misses=3,
+            require_readable=True,
+        )
     return []
 
 
@@ -436,6 +556,11 @@ def create_frame_source(cfg: CameraSourceConfig, *, mock_hardware: bool = False)
             path = path[4:]
         use_v4l2 = path.startswith("/dev/video")
         src: str | int = path if use_v4l2 else int(path) if path.isdigit() else path
-        return OpenCvFrameSource(src, use_v4l2=use_v4l2)
+        device_name: str | None = None
+        if platform.system() == "Windows" and isinstance(src, int):
+            names = _windows_dshow_device_names()
+            if 0 <= src < len(names):
+                device_name = names[src]
+        return OpenCvFrameSource(src, use_v4l2=use_v4l2, device_name=device_name)
 
     raise ValueError(f"Unknown camera kind: {cfg.kind}")

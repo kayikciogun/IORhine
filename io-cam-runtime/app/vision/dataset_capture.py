@@ -1,10 +1,10 @@
-"""VLM eğitim verisi: kameradan seri kare → 512 max-dimension JPEG."""
+"""VLM eğitim verisi: kameradan seri kare → JPEG (varsayılan: orijinal çözünürlük)."""
 from __future__ import annotations
 
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,7 @@ import numpy as np
 from app.config.settings import settings
 from app.runtime.camera import Camera
 from app.runtime.camera_sources import CameraSourceConfig, load_saved_config
-from app.vision.vlm_preprocess import VLM_IMG_MAX_DIM, resize_for_vlm
+from app.vision.vlm_preprocess import resize_for_vlm
 
 
 @dataclass
@@ -47,21 +47,21 @@ def capture_vlm_dataset(
     *,
     count: int = 200,
     interval_s: float = 0.25,
-    max_dim: int = VLM_IMG_MAX_DIM,
-    prefix: str = "stone",
+    max_dim: int | None = None,
+    prefix: str = "new1",
     jpeg_quality: int = 95,
     wait_first_frame_s: float = 8.0,
     camera: Camera | None = None,
     own_camera: bool = False,
 ) -> DatasetCaptureResult:
-    """Seri çekim: her kare VLM ile aynı şekilde 512'ye küçültülüp kaydedilir.
+    """Seri çekim: her kare varsayılan olarak orijinal çözünürlükte kaydedilir.
 
     Args:
         out_dir: Çıktı klasörü (oluşturulur).
         count: Kaydedilecek görüntü sayısı (varsayılan 200).
         interval_s: Kareler arası bekleme (saniye).
-        max_dim: Uzun kenar üst sınırı (VLM ile aynı: 512).
-        prefix: Dosya adı öneki → ``stone_00001.jpg``.
+        max_dim: Verilirse uzun kenarı bu değere küçültür; ``None`` = olduğu gibi.
+        prefix: Dosya adı öneki → ``new1_20260715_185930_00001.jpg``.
         jpeg_quality: JPEG kalitesi (0–100).
         wait_first_frame_s: İlk geçerli kare için bekleme.
         camera: Hazır ``Camera``; verilmezse kayıtlı cihaz açılır.
@@ -88,19 +88,26 @@ def capture_vlm_dataset(
         cam.open()
         _wait_for_live_frame(cam, wait_first_frame_s)
 
-        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        manifest_path = out / "manifest.json"
+        started = datetime.now().astimezone()
+        session_stamp = started.strftime("%Y%m%d_%H%M%S")
+        session_id = started.isoformat()
+        file_prefix = f"{prefix}_{session_stamp}"
+        manifest_path = out / f"manifest_{session_stamp}.json"
 
         for i in range(1, count + 1):
             try:
                 frame = cam.capture()
-                vlm_bgr, scale, orig_wh, new_wh = resize_for_vlm(frame, max_dim=max_dim)
+                if max_dim is not None and max_dim > 0:
+                    out_bgr, scale, orig_wh, new_wh = resize_for_vlm(frame, max_dim=max_dim)
+                else:
+                    h, w = frame.shape[:2]
+                    out_bgr, scale, orig_wh, new_wh = frame, 1.0, (w, h), (w, h)
 
-                fname = f"{prefix}_{i:05d}.jpg"
+                fname = f"{file_prefix}_{i:05d}.jpg"
                 fpath = out / fname
                 ok = cv2.imwrite(
                     str(fpath),
-                    vlm_bgr,
+                    out_bgr,
                     [cv2.IMWRITE_JPEG_QUALITY, int(np.clip(jpeg_quality, 1, 100))],
                 )
                 if not ok:
@@ -110,9 +117,9 @@ def capture_vlm_dataset(
                     "index": i,
                     "file": fname,
                     "path": str(fpath.resolve()),
-                    "captured_at": datetime.now(timezone.utc).isoformat(),
+                    "captured_at": datetime.now().astimezone().isoformat(),
                     "orig_size": {"w": orig_wh[0], "h": orig_wh[1]},
-                    "vlm_size": {"w": new_wh[0], "h": new_wh[1]},
+                    "saved_size": {"w": new_wh[0], "h": new_wh[1]},
                     "scale": round(scale, 6),
                     "max_dim": max_dim,
                 }
@@ -124,16 +131,23 @@ def capture_vlm_dataset(
             except Exception as e:
                 errors.append(f"frame {i}: {e}")
 
+        preprocess = (
+            f"resize_for_vlm (longest edge <= {max_dim}, INTER_AREA, no upscale)"
+            if max_dim is not None and max_dim > 0
+            else "none (original camera resolution)"
+        )
         manifest = {
             "session_id": session_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "session_stamp": session_stamp,
+            "created_at": datetime.now().astimezone().isoformat(),
             "requested": count,
             "saved": saved_n,
             "prefix": prefix,
+            "file_prefix": file_prefix,
             "max_dim": max_dim,
             "interval_s": interval_s,
             "jpeg_quality": jpeg_quality,
-            "preprocess": "resize_for_vlm (longest edge <= max_dim, INTER_AREA, no upscale)",
+            "preprocess": preprocess,
             "entries": entries,
             "errors": errors,
         }

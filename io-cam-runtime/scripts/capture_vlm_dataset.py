@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""VLM dataset seri çekim — 512 max-dimension JPEG.
+"""VLM dataset seri çekim — orijinal kamera çözünürlüğü JPEG.
 
 Kullanım (runtime venv içinde, kamera bağlı):
 
   cd io-cam-runtime
   source .venv/bin/activate
   python scripts/capture_vlm_dataset.py --count 200 --out ./datasets/stones_vlm512
+
+İsteğe bağlı küçültme:
+  python scripts/capture_vlm_dataset.py --count 200 --max-dim 512 --out ./datasets/stones_vlm512
 
 Ortam:
   IO_CAM_* ayarları (settings) — kayıtlı kamera ``calibration/camera_source.json``
@@ -23,12 +26,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from app.vision.dataset_capture import capture_vlm_dataset  # noqa: E402
-from app.vision.vlm_preprocess import VLM_IMG_MAX_DIM  # noqa: E402
 
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Taş fotoğrafları — VLM ile aynı 512 ön-işleme ile seri kayıt",
+        description="Taş fotoğrafları — varsayılan orijinal çözünürlükte seri kayıt",
     )
     p.add_argument(
         "--out",
@@ -46,10 +48,10 @@ def main() -> int:
     p.add_argument(
         "--max-dim",
         type=int,
-        default=VLM_IMG_MAX_DIM,
-        help=f"Uzun kenar px (varsayılan {VLM_IMG_MAX_DIM})",
+        default=None,
+        help="Verilirse uzun kenarı bu px'e küçült (varsayılan: yok, olduğu gibi)",
     )
-    p.add_argument("--prefix", type=str, default="stone", help="Dosya öneki")
+    p.add_argument("--prefix", type=str, default="new1", help="Dosya öneki")
     p.add_argument("--jpeg-quality", type=int, default=95)
     p.add_argument("--wait-frame", type=float, default=8.0, help="İlk kare bekleme (sn)")
     args = p.parse_args()
@@ -59,7 +61,9 @@ def main() -> int:
         return 1
 
     print(f"Çekim başlıyor: {args.count} kare → {args.out.resolve()}")
-    print(f"  max_dim={args.max_dim}  interval={args.interval}s  prefix={args.prefix}")
+    max_dim_txt = args.max_dim if args.max_dim is not None else "yok (orijinal)"
+    print(f"  max_dim={max_dim_txt}  interval={args.interval}s  prefix={args.prefix}")
+    print("  dosya adı: {prefix}_{YYYYMMDD_HHMMSS}_{index}.jpg")
 
     try:
         result = capture_vlm_dataset(

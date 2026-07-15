@@ -2,9 +2,9 @@
 AI Snapshot + OpenCV Hybrid Detection Module (app/vision/ai_detect.py)
 
 Pipeline:
-    1. Falcon-Perception (VLM) → taş merkezleri + kaba boyut
+    1. Falcon-Perception (VLM, PyTorch/CUDA) → taş merkezleri + kaba boyut
     2. Her bbox ROI → adaptive threshold → PCA/minAreaRect → açı
-    3. VLM bbox crop → ONNX ConvNeXt → orientation (true/false/false-side)
+    3. VLM bbox crop → ONNX ConvNeXt → orientation (true/false)
 
 Hız: varsayılan ``max_stones=1`` → kısa prompt + düşük max_new_tokens (~20).
 Çoklu tespit için ``max_stones`` yükselt.
@@ -35,6 +35,9 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 COL_CENTER = (0, 60, 255)
 COL_AXIS = (0, 140, 255)
 COL_BBOX = (0, 255, 120)  # VLM bbox — yeşil
+COL_LABEL = (255, 255, 0)  # true / default
+COL_ORIENT_FALSE = (0, 0, 255)  # BGR kırmızı — false orientation
+COL_ORIENT_TRUE = (0, 220, 0)  # BGR yeşil — true orientation
 
 def normalize_angle(rect: tuple) -> float:
     angle = rect[2]
@@ -142,11 +145,12 @@ _AI_MODEL_PATH = "tiiuae/Falcon-Perception"
 # 0.6B model — 300M tespit kalitesi yetersizdi (0 nesne).
 # max_dimension=512 (768 yerine).
 #
-# NOT: Falcon MLX ``max_new_tokens`` block_size=128 ile yukarı yuvarlanır;
-# tek başına limiti gevşek. Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz.
+# PyTorch/CUDA backend. BatchInferenceEngine.generate ``task="detection"``.
+# Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz.
 _AI_MAX_NEW_TOKENS_CAP = 48
 # presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
 _AI_MAX_NEW_TOKENS_SINGLE = 8
+_AI_DTYPE = "bfloat16"
 from app.vision.vlm_preprocess import (
     VLM_IMG_MAX_DIM as _AI_IMG_MAX_DIM,
     VLM_IMG_MIN_DIM as _AI_IMG_MIN_DIM,
@@ -157,12 +161,25 @@ _model = None
 _tokenizer = None
 _model_args = None
 _engine = None
+_device = None
 
 _ai_status = "uninitialized"  # uninitialized, loading, warming_up, ready, error
 # Worker: (Future, batch, max_new_tokens, max_stones)
 _ai_request_queue: "queue.Queue[tuple[Future | None, Any, int, int]]" = queue.Queue(maxsize=1)
 _worker_started = False
 _ai_busy_lock = threading.Lock()
+
+
+def _batch_to_device(batch: dict[str, Any]) -> dict[str, Any]:
+    """CPU batch tensor'larını worker CUDA cihazına taşı."""
+    import torch
+
+    if _device is None:
+        return batch
+    return {
+        k: (v.to(_device) if torch.is_tensor(v) else v)
+        for k, v in batch.items()
+    }
 
 
 def _max_new_tokens_for(max_stones: int) -> int:
@@ -181,6 +198,9 @@ def _stop_token_ids_for(max_stones: int) -> list[int]:
     eos = getattr(_tokenizer, "eos_token_id", None)
     if eos is not None:
         ids.append(int(eos))
+    eoq = getattr(_tokenizer, "end_of_query_token_id", None)
+    if eoq is not None:
+        ids.append(int(eoq))
     if max_stones <= 1:
         seg = getattr(_tokenizer, "seg_token_id", None)
         if seg is None:
@@ -194,37 +214,78 @@ def _stop_token_ids_for(max_stones: int) -> list[int]:
 
 
 def _ai_worker_thread():
-    global _model, _tokenizer, _model_args, _engine, _ai_status
+    global _model, _tokenizer, _model_args, _engine, _ai_status, _device
     try:
+        import torch
+        from falcon_perception import load_and_prepare_model, setup_torch_config
+        from falcon_perception.batch_inference import BatchInferenceEngine
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA kullanılabilir değil — NVIDIA sürücüsü / torch+cu wheel gerekli. "
+                f"torch={torch.__version__}"
+            )
+
+        setup_torch_config()
         _ai_status = "loading"
-        logger.info("Falcon-Perception weights loading in background...")
-        from falcon_perception import load_and_prepare_model
-        from falcon_perception.mlx.batch_inference import BatchInferenceEngine
-        _model, _tokenizer, _model_args = load_and_prepare_model(hf_model_id=_AI_MODEL_PATH, backend="mlx", dtype="bfloat16")
+        print(
+            f"[VLM] Falcon-Perception CUDA yukleniyor "
+            f"(device={torch.cuda.get_device_name(0)}, dtype={_AI_DTYPE})...",
+            flush=True,
+        )
+        logger.info(
+            "Falcon-Perception CUDA yükleniyor (device=%s, dtype=%s)...",
+            torch.cuda.get_device_name(0),
+            _AI_DTYPE,
+        )
+        _model, _tokenizer, _model_args = load_and_prepare_model(
+            hf_model_id=_AI_MODEL_PATH,
+            backend="torch",
+            dtype=_AI_DTYPE,
+            compile=True,
+            device="cuda",
+        )
+        _device = _model.device
+        # dtype/device gerçekten uygulandı mı? (istedik bfloat16 — sessizce fp32 kalmasın)
+        try:
+            _param = next(_model.parameters())
+            _real_dtype = _param.dtype
+            _real_device = _param.device
+        except StopIteration:
+            _real_dtype = getattr(_model, "dtype", "?")
+            _real_device = _device
+        print(
+            f"[VLM] Model dtype: {_real_dtype}  device: {_real_device}  "
+            f"(requested={_AI_DTYPE})",
+            flush=True,
+        )
+        if _real_dtype not in (torch.float16, torch.bfloat16):
+            print(
+                f"[VLM] WARNING: model dtype={_real_dtype} — fp16/bf16 degil, "
+                "CUDA path sessizce fp32 kullanıyor olabilir (2x yavaslik).",
+                flush=True,
+            )
+        # Batch engine: sadece model+tokenizer (paged engine'deki kernel_options yok).
         _engine = BatchInferenceEngine(_model, _tokenizer)
 
-        _ai_status = "warming_up"
-        logger.info("Warming up MLX computation graphs (this takes ~30s)...")
-        dummy_img = Image.new("RGB", (640, 480))
-        from falcon_perception import build_prompt_for_task
-        from falcon_perception.mlx.batch_inference import process_batch_and_generate
-        dummy_prompt = build_prompt_for_task("single stone", "detection")
-        batch = process_batch_and_generate(
-            _tokenizer,
-            [(dummy_img, dummy_prompt)],
-            max_length=_model_args.max_seq_len,
-            min_dimension=_AI_IMG_MIN_DIM,
-            max_dimension=_AI_IMG_MAX_DIM,
-            patch_size=_model_args.spatial_patch_size,
-            merge_size=1,
-        )
-        _engine.generate(**batch, max_new_tokens=10, task="detection")
-        _engine.generate(**batch, max_new_tokens=2, task="detection")
-
+        # Ayrı warmup generate YOK — torch.compile ilk gerçek detect'te bir kez derlenir.
+        # Eski dummy warm-up dakikalarca asılı kalıp status=warming_up'da kilitliyordu.
         _ai_status = "ready"
-        logger.info("Falcon-Perception ready and warmed up!")
+        free_gib = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+        print(
+            f"[VLM] READY device={_device} vram_free={free_gib:.1f} GiB "
+            "(ilk Kare Al compile icin biraz surebilir)",
+            flush=True,
+        )
+        logger.info(
+            "Falcon-Perception CUDA ready (device=%s, dtype=%s, vram=%.1f GiB free)",
+            _device,
+            _real_dtype,
+            free_gib,
+        )
     except Exception as e:
-        logger.error("AI Worker init failed: %s", e)
+        print(f"[VLM] ERROR worker init failed: {e}", flush=True)
+        logger.error("AI Worker init failed: %s", e, exc_info=True)
         _ai_status = "error"
         return
 
@@ -233,21 +294,52 @@ def _ai_worker_thread():
         if future is None:
             break
         try:
+            print(
+                f"[VLM] generate basliyor max_new_tokens={max_new_tokens} "
+                f"max_stones={max_stones} task=detection",
+                flush=True,
+            )
             stop_ids = _stop_token_ids_for(max_stones)
+            t_xfer0 = time.perf_counter()
+            gpu_batch = _batch_to_device(batch)
+            t_xfer1 = time.perf_counter()
+            t_gen0 = time.perf_counter()
             tokens, aux_outputs = _engine.generate(
-                **batch,
+                **gpu_batch,
                 max_new_tokens=max_new_tokens,
+                temperature=0.0,
                 stop_token_ids=stop_ids or None,
+                seed=42,
                 task="detection",
             )
+            t_gen1 = time.perf_counter()
+            xfer_sec = t_xfer1 - t_xfer0
+            gen_sec = t_gen1 - t_gen0
             # Girdi uzunluğu: sadece generate edilen kısmı decode etmek için
             try:
-                input_len = int(__import__("numpy").asarray(batch["tokens"]).shape[-1])
+                tok = batch.get("tokens")
+                if tok is not None:
+                    import torch
+
+                    if torch.is_tensor(tok):
+                        input_len = int(tok.shape[-1])
+                    else:
+                        input_len = int(np.asarray(tok).shape[-1])
+                else:
+                    input_len = 0
             except Exception:
                 input_len = 0
+            print(
+                f"[TIMING] VLM generate: {gen_sec:.3f}s "
+                f"(h2d={xfer_sec:.3f}s) input_len={input_len} "
+                f"max_new_tokens={max_new_tokens} max_stones={max_stones} "
+                f"task=detection",
+                flush=True,
+            )
+            print("[VLM] generate bitti", flush=True)
             if not future.done():
-                # tokens = padded id dizisi, aux = bbox parse, input_len = prompt uzunluğu
-                future.set_result((tokens, aux_outputs, input_len))
+                # tokens / aux / input_len / worker generate süresi
+                future.set_result((tokens, aux_outputs, input_len, gen_sec))
         except Exception as e:
             if not future.done():
                 future.set_exception(e)
@@ -270,6 +362,14 @@ def _format_vlm_tokens(tokens: Any, input_len: int = 0) -> tuple[str, list[int]]
 
     try:
         import numpy as np
+
+        try:
+            import torch
+
+            if torch.is_tensor(tokens):
+                tokens = tokens.detach().cpu().numpy()
+        except Exception:
+            pass
 
         arr = np.asarray(tokens)
     except Exception:
@@ -456,9 +556,10 @@ def ai_snapshot_detect(
     block_size: int = 31,
     c_val: int = 8,
     skip_if_busy: bool = False,
-    busy_timeout_s: float = 0.1,
+    busy_timeout_s: float = 60.0,
     max_stones: int = _DEFAULT_MAX_STONES,
 ) -> tuple[list[dict[str, Any]], np.ndarray, str]:
+    t0 = time.perf_counter()
     out = frame.copy() if draw else frame
     objects: list[dict[str, Any]] = []
     max_stones = max(1, int(max_stones))
@@ -466,6 +567,7 @@ def ai_snapshot_detect(
     get_ai_model()  # Arka plan thread'ini baslatir (eger baslamamissa)
 
     if _ai_status != "ready":
+        print(f"[VLM] skip — status={_ai_status} (henuz hazir degil)", flush=True)
         if draw:
             h, w = out.shape[:2]
             cv2.rectangle(out, (0, 0), (w, 80), (0, 0, 0), -1)
@@ -473,25 +575,31 @@ def ai_snapshot_detect(
         return objects, out, ""
 
     from falcon_perception import build_prompt_for_task
-    from falcon_perception.mlx.batch_inference import process_batch_and_generate
+    from falcon_perception.batch_inference import process_batch_and_generate
 
     # Ön küçültme: ``process_batch_and_generate`` öncesi cv2 ile küçült (dataset ile aynı).
+    t_pre0 = time.perf_counter()
     small, _, _, _ = resize_for_vlm(frame, max_dim=_AI_IMG_MAX_DIM)
     pil_image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
 
     subject = (prompt or "").strip() or "stone"
     text_prompt = build_prompt_for_task(subject, "detection")
     max_new_tokens = _max_new_tokens_for(max_stones)
+    max_length = min(4096, int(getattr(_model_args, "max_seq_len", 4096)))
     batch = process_batch_and_generate(
         _tokenizer,
         [(pil_image, text_prompt)],
-        max_length=_model_args.max_seq_len,
+        max_length=max_length,
         min_dimension=_AI_IMG_MIN_DIM,
         max_dimension=_AI_IMG_MAX_DIM,
-        patch_size=_model_args.spatial_patch_size,
-        merge_size=1,
     )
-    
+    t_pre1 = time.perf_counter()
+    print(
+        f"[TIMING] preprocess: {t_pre1 - t_pre0:.3f}s "
+        f"(task=detection max_new_tokens={max_new_tokens} max_stones={max_stones})",
+        flush=True,
+    )
+
     # Submit to background thread and wait for result via Future.
     # Eski ``id(batch)`` + busy-wait ``time.sleep(0.01)`` race-condition'ydı:
     # Python ``id()`` GC sonrası reuse edebilir, iki batch aynı id'ye çarpışıp
@@ -510,25 +618,39 @@ def ai_snapshot_detect(
         except queue.Full:
             return objects, out, text_prompt
     else:
-        # Blocking put ama kısa timeout ile — uzun süredir doluysa yine de hata.
+        # Blocking put — snapshot/job için önceki iş bitsin (varsayılan 60s).
         try:
             _ai_request_queue.put(
                 (future, batch, max_new_tokens, max_stones),
                 timeout=busy_timeout_s,
             )
         except queue.Full:
+            print(
+                f"[VLM] skip — AI queue dolu (busy timeout {busy_timeout_s:.1f}s)",
+                flush=True,
+            )
             logger.warning("AI queue dolu (busy) — put timeout %.1fs", busy_timeout_s)
-            return objects, out, text_prompt
+            raise RuntimeError(
+                f"AI meşgul — {busy_timeout_s:.0f}s içinde sıraya giremedi. "
+                "Önceki analizi bekleyip tekrar deneyin."
+            )
     # Sync bekleyici: ws.py / vision.py / job_runner hepsi sync context'te.
-    # Async context'te çağıran ``await asyncio.wrap_future(future)`` tercih etmeli;
-    # burada ``result(timeout)`` ile sonsuz bekleme yerine 30 sn deadline veriyoruz.
+    # Async context'te çağıran ``await asyncio.wrap_future(future)`` tercih etmeli.
+    # İlk torch.compile 30 sn'yi kolay aşar → 180 sn (sonraki istekler hızlı biter).
+    t_wait0 = time.perf_counter()
     try:
-        result = future.result(timeout=30.0)
+        result = future.result(timeout=180.0)
     except Exception as exc:
-        logger.error("AI Inference Error: %s", exc)
+        err = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        print(f"[VLM] AI Inference Error: {err}", flush=True)
+        logger.error("AI Inference Error: %s", err, exc_info=True)
         return objects, out, text_prompt
+    t_wait1 = time.perf_counter()
 
-    if isinstance(result, tuple) and len(result) == 3:
+    worker_gen_sec = -1.0
+    if isinstance(result, tuple) and len(result) == 4:
+        tokens, aux_outputs, input_len, worker_gen_sec = result
+    elif isinstance(result, tuple) and len(result) == 3:
         tokens, aux_outputs, input_len = result
     elif isinstance(result, tuple) and len(result) == 2:
         tokens, aux_outputs = result
@@ -537,8 +659,19 @@ def ai_snapshot_detect(
         # Eski worker sonucu (sadece aux) — güvenlik
         tokens, aux_outputs, input_len = None, result, 0
 
+    wait_sec = t_wait1 - t_wait0
+
+    t_parse0 = time.perf_counter()
     vlm_reply, gen_ids = _format_vlm_tokens(tokens, input_len=input_len)
     aux = aux_outputs[0]
+    n_tok = len(gen_ids)
+    ms_per = (worker_gen_sec * 1000.0 / n_tok) if n_tok > 0 and worker_gen_sec >= 0 else 0.0
+    print(
+        f"[TIMING] VLM wait+generate: {wait_sec:.3f}s "
+        f"(worker_generate={worker_gen_sec:.3f}s "
+        f"gen_tokens={n_tok} ~{ms_per:.1f}ms/token incl.prefill)",
+        flush=True,
+    )
 
     # ── Get bboxes from aux ─────────────────────────────────────
     # bboxes_raw is a flat alternating list: [{x,y}, {h,w}, {x,y}, {h,w}, ...].
@@ -558,6 +691,12 @@ def ai_snapshot_detect(
     # Model yine fazla döndürebilir — decode erken bitsin diye token kısıtlı;
     # güvenlik ağı olarak üst sınırı uygula.
     detections = detections[:max_stones]
+    t_parse1 = time.perf_counter()
+    print(
+        f"[TIMING] bbox parse: {t_parse1 - t_parse0:.3f}s "
+        f"gen_tokens={len(gen_ids)} boxes={len(detections)}",
+        flush=True,
+    )
 
     _vlog(
         "max_new_tokens=%d gen_tokens=%d subject=%r objects_cap=%d early_stop_seg=%s",
@@ -573,12 +712,21 @@ def ai_snapshot_detect(
     _vlog("bbox_keep=%d", len(detections))
 
     if not detections:
+        t_end = time.perf_counter()
+        total = t_end - t0
+        print(
+            f"[TIMING] TOPLAM: {total:.3f}s ({(1.0 / total) if total > 0 else 0.0:.2f} FPS) "
+            f"(0 stone — VLM/preprocess dominant)",
+            flush=True,
+        )
         _vlog("AI detection returned no centers")
         return objects, out, vlm_reply
 
     img_h, img_w = frame.shape[:2]
     from app.vision.orientation_classifier import classify_orientation_onnx
 
+    angle_total = 0.0
+    classify_total = 0.0
     for i, (xy, size) in enumerate(detections, 1):
         # VLM küçük görüntüden normalize (0-1) koordinat döndürür. Orijinal
         # görüntüye geri ölçekle.
@@ -610,6 +758,7 @@ def ai_snapshot_detect(
         x2 = min(img_w, cx + roi_half_x)
         y2 = min(img_h, cy + roi_half_y)
 
+        t_a = time.perf_counter()
         angle = _roi_angle(
             frame, x1, y1, x2, y2,
             thresh_val=thresh_val,
@@ -617,10 +766,20 @@ def ai_snapshot_detect(
             invert=invert_threshold, use_pca=use_pca_angle,
             is_symmetric=is_symmetric,
         )
+        t_b = time.perf_counter()
 
         # Yön: VLM'in verdiği tam bbox crop → ONNX classifier
         orientation, orient_conf = classify_orientation_onnx(
             frame, bx1, by1, bx2, by2,
+        )
+        t_c = time.perf_counter()
+        angle_sec = t_b - t_a
+        classify_sec = t_c - t_b
+        angle_total += angle_sec
+        classify_total += classify_sec
+        print(
+            f"[TIMING] stone {i}: angle={angle_sec:.3f}s classify={classify_sec:.3f}s",
+            flush=True,
         )
         _vlog(
             "stone#%d cx=%d cy=%d angle=%.1f orient=%s conf=%.2f",
@@ -643,7 +802,13 @@ def ai_snapshot_detect(
             tw, th = cv2.getTextSize(label, FONT, 0.4, 1)[0]
             lx, ly = cx - tw // 2, max(th + 6, by1 - 6)
             cv2.rectangle(out, (lx - 2, ly - th - 3), (lx + tw + 2, ly + 4), (0, 0, 0), -1)
-            cv2.putText(out, label, (lx, ly), FONT, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
+            if orientation == "false":
+                label_color = COL_ORIENT_FALSE
+            elif orientation == "true":
+                label_color = COL_ORIENT_TRUE
+            else:
+                label_color = COL_LABEL
+            cv2.putText(out, label, (lx, ly), FONT, 0.4, label_color, 1, cv2.LINE_AA)
 
         objects.append({
             "id": i, "index": i,
@@ -658,7 +823,20 @@ def ai_snapshot_detect(
             "score": round(orient_conf, 3) if orientation != "uncertain" else 1.0,
         })
 
-    # For now just return — once we see the log output we'll parse correctly
+    t_end = time.perf_counter()
+    total = t_end - t0
+    post_sec = angle_total + classify_total
+    print(
+        f"[TIMING] postprocess: angle_sum={angle_total:.3f}s "
+        f"classify_sum={classify_total:.3f}s ({len(detections)} stones)",
+        flush=True,
+    )
+    print(
+        f"[TIMING] TOPLAM: {total:.3f}s ({(1.0 / total) if total > 0 else 0.0:.2f} FPS) "
+        f"| pre={t_pre1 - t_pre0:.3f}s vlm={worker_gen_sec:.3f}s "
+        f"wait={wait_sec:.3f}s post={post_sec:.3f}s",
+        flush=True,
+    )
     return objects, out, vlm_reply
 
 @dataclass
@@ -670,7 +848,7 @@ class Stone:
     area: float = 0.0
     robot_x: float = 0.0
     robot_y: float = 0.0
-    orientation: str = "uncertain"  # true | false | false-side | uncertain
+    orientation: str = "uncertain"  # true | false | uncertain
     orientation_confidence: float = 0.0
 
 def detect_all(

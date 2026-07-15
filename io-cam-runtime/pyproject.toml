@@ -15,8 +15,14 @@ dependencies = [
     "python-multipart>=0.0.12",
     "websockets>=13.0",
     "ezdxf>=1.3.0",
-    "falcon-perception>=1.0.0",
-    "onnxruntime>=1.19.0",
+    # NVIDIA CUDA: falcon-perception torch backend + ONNX GPU
+    "falcon-perception[torch]>=1.0.0",
+    "onnxruntime-gpu>=1.19.0",
+    # Falcon FlexAttention Triton kernels (Windows community wheel)
+    "triton-windows>=3.0.0; sys_platform == 'win32'",
+    "triton>=3.0.0; sys_platform == 'linux'",
+    # Windows: DirectShow kamera isimleri (Iriun / OBS / USB Webcam)
+    "pygrabber>=0.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

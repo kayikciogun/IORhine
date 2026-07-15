@@ -106,7 +106,8 @@ async def select_camera(body: SelectCameraBody):
         services.camera = Camera(cfg, mock=settings.mock_hardware)
 
     try:
-        services.camera.select_source(cfg)
+        # deferred=False: thread ile çift-open yarışını önle (Windows DSHOW patlar).
+        services.camera.select_source(cfg, deferred=False)
         services.camera.open()
     except Exception as e:
         # macOS kamera izni reddedilmiş olabilir — kullanıcıya net mesaj göster.

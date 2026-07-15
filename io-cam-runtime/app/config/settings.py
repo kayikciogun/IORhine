@@ -9,8 +9,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CONFIG_DIR = Path(__file__).resolve().parent
 _RUNTIME_ROOT = _CONFIG_DIR.parents[1]  # io-cam-runtime/
+_REPO_ROOT = _RUNTIME_ROOT.parent
 _DEFAULT_MOTION = _CONFIG_DIR / "motion.json"
-_ENV_FILE = _RUNTIME_ROOT / ".env"
+
+
+def _dotenv_files() -> tuple[str, ...] | None:
+    """Tek `.env` — repo kökü. Tüm app (frontend + runtime) buradan okur.
+
+    Eskiden ``io-cam-runtime/.env`` de okunuyordu; iki dosyanın değerleri
+    çakışınca kafa karıştırıyordu. Artık yalnızca kök ``.env`` kullanılır.
+    """
+    path = _REPO_ROOT / ".env"
+    return (str(path),) if path.is_file() else None
 
 
 def _load_motion_defaults() -> dict:
@@ -25,8 +35,10 @@ _motion = _load_motion_defaults()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="IO_CAM_",
-        env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None,
+        env_file=_dotenv_files(),
         env_file_encoding="utf-8",
+        # .env değişince process env'de eski değer kalmasın diye file'ı her seferinde oku
+        env_ignore_empty=True,
         extra="ignore",
     )
 
@@ -74,9 +86,9 @@ class Settings(BaseSettings):
     vlm_prompt: str = "single black rhinestone"
     vlm_max_stones: int = Field(default=1, ge=1, le=20)
 
-    # Orientation CNN (ONNX) — VLM bbox crop → true / false / false-side
+    # Orientation CNN (ONNX) — VLM bbox crop → true / false
     orientation_model_dir: Path = Field(
-        default_factory=lambda: _RUNTIME_ROOT / "datasets" / "orientation_model"
+        default_factory=lambda: _RUNTIME_ROOT / "datasets" / "orientation_model_v2"
     )
 
     rotation_axis: Literal["A", "E"] = _motion.get("rotation_axis", "A")  # type: ignore[arg-type]

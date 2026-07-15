@@ -4,8 +4,8 @@ orientation_classifier.py
 
 Eğitilmiş ONNX modelini yükleyip her taş crop'u için orientation sınıfı tahmin eder.
 
-Sınıflar (VisoLabel): false-side / true / false
-Model dizini: ``io-cam-runtime/datasets/orientation_model/``
+Sınıflar (VisoLabel): true / false
+Model dizini: ``io-cam-runtime/datasets/orientation_model_v2/``
   - orientation_model.onnx (+ .onnx.data)
   - class_names.json
 """
@@ -24,7 +24,7 @@ logger = logging.getLogger("io_cam.orientation")
 # io-cam-runtime/ — cwd'den bağımsız mutlak kök
 # app/vision/orientation_classifier.py → parents[2] = io-cam-runtime
 _RUNTIME_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_MODEL_DIR = _RUNTIME_ROOT / "datasets" / "orientation_model"
+_DEFAULT_MODEL_DIR = _RUNTIME_ROOT / "datasets" / "orientation_model_v2"
 
 _session: Any = None
 _class_names: list[str] = []
@@ -35,6 +35,12 @@ _load_failed = False
 # ImageNet normalizasyonu — training ile aynı
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+
+# "true" yalnızca modelin yüksek emin olduğu durumlarda kabul edilir; altında
+# kalan tahminler "false" sayılır (yanlış "true" pahalı — taş yanlış yöne
+# yapıştırılır). "false" tarafı emniyetten bağımsız — az emin de olsa false
+# kabul etmek daha güvenli (en kötü ihtimalle gereksiz çevirme).
+_TRUE_CONFIDENCE_THRESHOLD = 0.7
 
 
 def _resolve_model_dir(model_dir: Path | str | None = None) -> Path:
@@ -81,7 +87,10 @@ def _load_orientation_model(model_dir: Path | str | None = None) -> bool:
     try:
         import onnxruntime as ort
     except ImportError:
-        logger.warning("onnxruntime kurulu değil — pip install onnxruntime")
+        logger.warning(
+            "onnxruntime kurulu değil — pip install onnxruntime-gpu "
+            "(veya CPU: onnxruntime)"
+        )
         _load_failed = True
         return False
 
@@ -91,15 +100,14 @@ def _load_orientation_model(model_dir: Path | str | None = None) -> bool:
     _img_size = int(meta["img_size"])
 
     available = ort.get_available_providers()
-    # CoreML, external-data (.onnx.data) modellerde sıkça
-    # ``model_path must not be empty`` ile patlıyor — önce CPU dene,
-    # CoreML'i yalnızca CPU başarısız olursa (veya env ile) aç.
-    preferred: list[str] = ["CPUExecutionProvider"]
+    # Küçük 128² crop — CPU yeterli. Windows'ta CUDA EP çoğu kez cuDNN ister;
+    # yoksa gürültülü fail. Önce CPU; olmazsa CUDA+CPU dene.
+    tries: list[list[str]] = [["CPUExecutionProvider"]]
     if "CUDAExecutionProvider" in available:
-        preferred.insert(0, "CUDAExecutionProvider")
+        tries.append(["CUDAExecutionProvider", "CPUExecutionProvider"])
 
     last_err: Exception | None = None
-    for providers in (preferred, ["CPUExecutionProvider"]):
+    for providers in tries:
         try:
             _session = ort.InferenceSession(str(model_path), providers=providers)
             break
@@ -172,4 +180,10 @@ def classify_orientation_onnx(
     probs = exp / exp.sum()
     pred_idx = int(np.argmax(probs))
     confidence = float(probs[pred_idx])
-    return _class_names[pred_idx], confidence
+    label = _class_names[pred_idx]
+
+    # Düşük emniyetli "true" → "false"a düşür (yanlış true'nun maliyeti yüksek).
+    if label == "true" and confidence < _TRUE_CONFIDENCE_THRESHOLD:
+        return "false", confidence
+
+    return label, confidence
