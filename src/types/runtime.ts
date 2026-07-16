@@ -132,7 +132,11 @@ export type RuntimeEvent =
   | { evt: 'operator_feed_required'; data?: void }
   | { evt: 'glue_cell'; data: { cell: number; x: number; y: number } }
   | { evt: 'glue_sheet_exhausted'; data?: void }
-  | { evt: 'job_complete'; data?: void };
+  | { evt: 'job_complete'; data?: void }
+  | {
+      evt: 'ai_status';
+      data: { status: string; detail?: string };
+    };
 
 export interface DetectedStone {
   id?: number;

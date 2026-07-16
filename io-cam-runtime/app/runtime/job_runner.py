@@ -231,7 +231,9 @@ class JobRunner:
                     if self.ctx.stop_requested:
                         return
                     continue
-                stones = detect_all(frame, self.template, cal_dir=self.cal_dir)
+                stones = await asyncio.to_thread(
+                    detect_all, frame, self.template, cal_dir=self.cal_dir
+                )
 
                 if not stones:
                     await self.bus.emit("operator_feed_required", {})

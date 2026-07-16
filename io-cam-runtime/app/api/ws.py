@@ -37,6 +37,13 @@ async def ws_control(websocket: WebSocket):
             pass
 
     services.bus.subscribe(forward)
+    # Bağlanan client'a anlık AI durumu (startup warmup / loading bilgisini kaçırmasın)
+    try:
+        await websocket.send_text(
+            json.dumps({"evt": "ai_status", "data": {"status": ai_status()}})
+        )
+    except Exception:
+        pass
     # Subscriber leak fix: ``finally`` bloğunda unsubscribe yapılmalı; yoksa
     # bağlantı kapandıktan sonra bile event'ler kapalı socket'e yazılmaya
     # çalışılır → memory leak + ``send_text`` exception spam.

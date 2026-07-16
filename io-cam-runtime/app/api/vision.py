@@ -43,6 +43,15 @@ async def get_vision_settings():
     return _vision_to_dict(get_vision())
 
 
+_AI_STATUS_MESSAGES = {
+    "uninitialized": "AI henüz başlatılmadı.",
+    "loading": "AI modeli yükleniyor — lütfen bekleyin.",
+    "warming_up": "AI modeli derleniyor (ilk açılış, 1–3 dk sürebilir) — lütfen bekleyin.",
+    "ready": "AI hazır.",
+    "error": "AI model yüklenemedi.",
+}
+
+
 @router.get("/status")
 async def get_ai_status_endpoint():
     """AI model durumunu döndürür — frontend buton disable/retry için.
@@ -50,7 +59,11 @@ async def get_ai_status_endpoint():
     ``uninitialized`` / ``loading`` / ``warming_up`` → buton disabled.
     ``ready`` → buton aktif. ``error`` → hata mesajı + retry.
     """
-    return {"ai_status": ai_status()}
+    status = ai_status()
+    return {
+        "ai_status": status,
+        "message": _AI_STATUS_MESSAGES.get(status, status),
+    }
 
 
 @router.post("/settings")
@@ -83,8 +96,8 @@ class SnapshotDetectBody(BaseModel):
     draw: bool = True
     block_size: int = Field(default=31, ge=3, le=101)
     c_val: int = Field(default=8, ge=-20, le=50)
-    # None → .env IO_CAM_VLM_MAX_STONES (varsayılan 1)
-    max_stones: int | None = Field(default=None, ge=1, le=20)
+    # None → .env IO_CAM_VLM_MAX_STONES (varsayılan 10)
+    max_stones: int | None = Field(default=None, ge=1, le=100)
 
 
 @router.post("/snapshot-detect")
@@ -107,16 +120,17 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         # VLM hazır değilse 503 yerine durum bilgisini döndür — frontend buton
         # aktif kalsın, kullanıcı tıkladığında backend'in durumunu görsün.
         # ``ai_snapshot_detect`` çağırmaya gerek yok (zaten boş döner).
+        msg = _AI_STATUS_MESSAGES.get(status, f"AI model hazır değil (durum: {status}).")
         print(f"[VLM] snapshot-detect reddedildi — status={status}", flush=True)
         return {
             "ok": False,
-            "error": f"AI model hazır değil (durum: {status}). Lütfen bekleyin.",
+            "error": msg,
             "ai_status": status,
         }
 
     camera = services.ensure_camera()
     try:
-        frame = camera.capture()
+        frame = await asyncio.to_thread(camera.capture)
     except RuntimeError as e:
         return {"ok": False, "error": str(e), "ai_status": status}
     if frame is None or frame.size == 0:
@@ -134,7 +148,9 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
     try:
         from app.vision.ai_detect import ai_snapshot_detect
 
-        objects, out_frame, raw_text = ai_snapshot_detect(
+        # Sync VLM inference event loop'u bloke etmesin (WS / health / UI).
+        objects, out_frame, raw_text = await asyncio.to_thread(
+            ai_snapshot_detect,
             frame,
             prompt,
             thresh_val=body.thresh_val,
@@ -150,7 +166,9 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         # stdout → .logs/runtime.log (uvicorn logger'a güvenmeden)
         # VLM detayı ai_detect._vlog ile runtime.log'a gidiyor — burada tekrar basma.
 
-        _, buf = cv2.imencode(".jpg", out_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        _, buf = await asyncio.to_thread(
+            cv2.imencode, ".jpg", out_frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
+        )
         image_b64 = base64.b64encode(buf).decode("ascii")
 
         return {
@@ -160,6 +178,7 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             "prompt": prompt,
             "max_stones": max_stones,
             "image_base64": f"data:image/jpeg;base64,{image_b64}",
+            "ai_status": ai_status(),
         }
     except Exception as e:
         import logging

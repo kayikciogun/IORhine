@@ -419,11 +419,11 @@ export type AiStatus =
 
 export async function getAiStatus(
   config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
-): Promise<AiStatus> {
+): Promise<{ status: AiStatus; message?: string }> {
   const res = await fetch(`${config.restBaseUrl}/api/vision/status`);
   if (!res.ok) throw await extractError(res, 'getAiStatus');
-  const data = (await res.json()) as { ai_status: AiStatus };
-  return data.ai_status;
+  const data = (await res.json()) as { ai_status: AiStatus; message?: string };
+  return { status: data.ai_status, message: data.message };
 }
 
 export async function runSnapshotDetect(

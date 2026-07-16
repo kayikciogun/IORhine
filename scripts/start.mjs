@@ -92,12 +92,21 @@ function runSync(cmd, args, opts = {}) {
   if (r.status !== 0) die(`${cmd} ${args.join(" ")} başarısız (code ${r.status})`);
 }
 
+/** Shell'de kalmış IO_CAM_* değerleri .env'i ezer — spawn öncesi temizle. */
+function envWithoutStaleIoCam(extra = {}) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("IO_CAM_")) delete env[key];
+  }
+  return { ...env, ...extra };
+}
+
 function startLogged(cmd, args, logFile, opts = {}) {
   mkdirSync(LOG_DIR, { recursive: true });
   const fd = openSync(logFile, "a");
   const child = spawn(cmd, args, {
     cwd: opts.cwd || ROOT,
-    env: { ...process.env, ...opts.env },
+    env: envWithoutStaleIoCam(opts.env || {}),
     shell: IS_WIN,
     stdio: ["ignore", fd, fd],
     detached: false,

@@ -2,7 +2,7 @@
 VLM Worker and Model Management (app/vision/vlm_worker.py)
 
 Handles Falcon-Perception (VLM) PyTorch/CUDA model lifecycle, inference queue,
-batch generation, token decoding, and logger output.
+PagedInferenceEngine generation, token decoding, and logger output.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -30,15 +30,16 @@ def _vlog(msg: str, *args: Any) -> None:
 
 
 _AI_MODEL_PATH = "tiiuae/Falcon-Perception"
-# 0.6B model — 300M tespit kalitesi yetersizdi (0 nesne).
-# max_dimension=512 (768 yerine).
+# Varsayılan 0.6B. 0.3B denemek için .env: IO_CAM_VLM_MODEL=tiiuae/Falcon-Perception-300M
+# (300M detection-only; seg token yok. Önceki denemede kalite zayıftı — A/B için env bırakıldı.)
 #
-# PyTorch/CUDA backend. BatchInferenceEngine.generate ``task="detection"``.
-# Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz.
+# PyTorch/CUDA + PagedInferenceEngine (paged KV, CUDA graph decode).
+# Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz (0.6B).
 _AI_MAX_NEW_TOKENS_CAP = 48
 # presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
 _AI_MAX_NEW_TOKENS_SINGLE = 8
 _AI_DTYPE = "bfloat16"
+_AI_MAX_SEQ_LENGTH = 8192
 
 _DEFAULT_MAX_STONES = 10
 _model = None
@@ -48,22 +49,45 @@ _engine = None
 _device = None
 
 _ai_status = "uninitialized"  # uninitialized, loading, warming_up, ready, error
-# Worker: (Future, batch, max_new_tokens, max_stones)
-_ai_request_queue: "queue.Queue[tuple[Future | None, Any, int, int]]" = queue.Queue(maxsize=1)
+# Worker: (Future | None, pil_image, text_prompt, max_new_tokens, max_stones)
+# Shutdown: (None, None, None, 0, 0)
+_ai_request_queue: "queue.Queue[tuple[Future | None, Any, str | None, int, int]]" = queue.Queue(
+    maxsize=1
+)
 _worker_started = False
 _ai_busy_lock = threading.Lock()
+_status_listeners: list[Callable[[str], None]] = []
 
 
-def _batch_to_device(batch: dict[str, Any]) -> dict[str, Any]:
-    """CPU batch tensor'larını worker CUDA cihazına taşı."""
-    import torch
+def on_ai_status_change(listener: Callable[[str], None]) -> None:
+    """UI / EventBus için durum değişimi dinleyicisi (worker thread'den çağrılır)."""
+    _status_listeners.append(listener)
 
-    if _device is None:
-        return batch
-    return {
-        k: (v.to(_device) if torch.is_tensor(v) else v)
-        for k, v in batch.items()
-    }
+
+def _set_ai_status(status: str) -> None:
+    global _ai_status
+    if _ai_status == status:
+        return
+    _ai_status = status
+    print(f"[VLM] status -> {status}", flush=True)
+    for cb in list(_status_listeners):
+        try:
+            cb(status)
+        except Exception as exc:
+            logger.warning("ai_status listener failed: %s", exc)
+
+
+def _resolve_model_id() -> str:
+    """``.env`` / settings → HF model id (yoksa 0.6B varsayılan)."""
+    try:
+        from app.config.settings import settings
+
+        mid = (settings.vlm_model or "").strip()
+        if mid:
+            return mid
+    except Exception:
+        pass
+    return _AI_MODEL_PATH
 
 
 def _max_new_tokens_for(max_stones: int) -> int:
@@ -97,12 +121,89 @@ def _stop_token_ids_for(max_stones: int) -> list[int]:
     return ids
 
 
+def _run_paged_generate(
+    pil_image: Any,
+    text_prompt: str,
+    *,
+    max_new_tokens: int,
+    max_stones: int,
+) -> tuple[Any, list[Any], int, float, Any]:
+    """PagedInferenceEngine.generate — (tokens, [aux], input_len, gen_sec, stats)."""
+    from falcon_perception.paged_inference import SamplingParams, Sequence
+
+    seq = Sequence(
+        text=text_prompt,
+        image=pil_image,
+        min_image_size=_AI_IMG_MIN_DIM,
+        max_image_size=_AI_IMG_MAX_DIM,
+        task="detection",
+    )
+    stop_ids = _stop_token_ids_for(max_stones)
+    sampling = SamplingParams(
+        max_new_tokens=max_new_tokens,
+        stop_token_ids=stop_ids or None,
+    )
+    t0 = time.perf_counter()
+    done = _engine.generate(
+        [seq],
+        sampling_params=sampling,
+        temperature=0.0,
+        use_tqdm=False,
+        print_stats=False,
+    )
+    gen_sec = time.perf_counter() - t0
+    out_seq = done[0] if done else seq
+    try:
+        input_len = int(out_seq.input_length)
+    except Exception:
+        input_len = 0
+    try:
+        # output_ids property GPU skaler listeden tensor üretebilir; int liste daha güvenli
+        raw_ids = getattr(out_seq, "_output_ids", None) or []
+        tokens = [
+            int(t.item()) if hasattr(t, "item") else int(t)
+            for t in raw_ids
+        ]
+    except Exception:
+        try:
+            tokens = out_seq.output_ids
+        except Exception:
+            tokens = None
+    stats = getattr(out_seq, "stats", None)
+    return tokens, [out_seq.output_aux], input_len, gen_sec, stats
+
+
+def _run_compile_warmup() -> None:
+    """torch.compile + CUDA graph maliyetini startup'a çek (Sequence yolu)."""
+    from falcon_perception import build_prompt_for_task
+    from PIL import Image
+
+    dummy = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
+    text_prompt = build_prompt_for_task("stone", "detection")
+    print("[VLM] PagedInferenceEngine warmup basliyor (30-180s surebilir)...", flush=True)
+    t0 = time.perf_counter()
+    _run_paged_generate(
+        dummy,
+        text_prompt,
+        max_new_tokens=_AI_MAX_NEW_TOKENS_SINGLE,
+        max_stones=1,
+    )
+    print(
+        f"[VLM] PagedInferenceEngine warmup bitti ({time.perf_counter() - t0:.1f}s)",
+        flush=True,
+    )
+
+
 def _ai_worker_thread():
-    global _model, _tokenizer, _model_args, _engine, _ai_status, _device
+    global _model, _tokenizer, _model_args, _engine, _device
     try:
         import torch
         from falcon_perception import load_and_prepare_model, setup_torch_config
-        from falcon_perception.batch_inference import BatchInferenceEngine
+        from falcon_perception.data import ImageProcessor
+        from falcon_perception.paged_inference import (
+            PagedInferenceEngine,
+            engine_config_for_gpu,
+        )
 
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -111,26 +212,28 @@ def _ai_worker_thread():
             )
 
         setup_torch_config()
-        _ai_status = "loading"
+        _set_ai_status("loading")
+        model_id = _resolve_model_id()
         print(
             f"[VLM] Falcon-Perception CUDA yukleniyor "
-            f"(device={torch.cuda.get_device_name(0)}, dtype={_AI_DTYPE})...",
+            f"(model={model_id}, device={torch.cuda.get_device_name(0)}, "
+            f"dtype={_AI_DTYPE}, engine=PagedInferenceEngine)...",
             flush=True,
         )
         logger.info(
-            "Falcon-Perception CUDA yükleniyor (device=%s, dtype=%s)...",
+            "Falcon-Perception CUDA yükleniyor (model=%s, device=%s, dtype=%s)...",
+            model_id,
             torch.cuda.get_device_name(0),
             _AI_DTYPE,
         )
         _model, _tokenizer, _model_args = load_and_prepare_model(
-            hf_model_id=_AI_MODEL_PATH,
+            hf_model_id=model_id,
             backend="torch",
             dtype=_AI_DTYPE,
             compile=True,
             device="cuda",
         )
         _device = _model.device
-        # dtype/device gerçekten uygulandı mı? (istedik bfloat16 — sessizce fp32 kalmasın)
         try:
             _param = next(_model.parameters())
             _real_dtype = _param.dtype
@@ -145,24 +248,53 @@ def _ai_worker_thread():
         )
         if _real_dtype not in (torch.float16, torch.bfloat16):
             print(
-                f"[VLM] WARNING: model dtype={_real_dtype} — fp16/bf16 degil, "
+                f"[VLM] WARNING: model dtype={_real_dtype} - fp16/bf16 degil, "
                 "CUDA path sessizce fp32 kullanıyor olabilir (2x yavaslik).",
                 flush=True,
             )
-        # Batch engine: sadece model+tokenizer (paged engine'deki kernel_options yok).
-        _engine = BatchInferenceEngine(_model, _tokenizer)
 
-        # Ayrı warmup generate YOK — torch.compile ilk gerçek detect'te bir kez derlenir.
-        # Eski dummy warm-up dakikalarca asılı kalıp status=warming_up'da kilitliyordu.
-        _ai_status = "ready"
+        image_processor = ImageProcessor(patch_size=16, merge_size=1)
+        cfg = engine_config_for_gpu(
+            max_image_size=_AI_IMG_MAX_DIM,
+            device=_device,
+            dtype=_model.dtype,
+        )
+        # max_seq_length page_size ile bölünmeli; server varsayılanı 8192.
+        page_size = int(cfg.get("page_size", 128))
+        max_seq = _AI_MAX_SEQ_LENGTH
+        if max_seq % page_size != 0:
+            max_seq = (max_seq // page_size) * page_size
+        print(
+            f"[VLM] PagedInferenceEngine cfg={{{', '.join(f'{k}={v}' for k, v in cfg.items())}}} "
+            f"max_seq_length={max_seq}",
+            flush=True,
+        )
+        _engine = PagedInferenceEngine(
+            _model,
+            _tokenizer,
+            image_processor,
+            max_seq_length=max_seq,
+            capture_cudagraph=True,
+            seed=42,
+            **cfg,
+        )
+
+        _set_ai_status("warming_up")
+        try:
+            _run_compile_warmup()
+        except Exception as warm_exc:
+            print(f"[VLM] warmup uyarisi (devam): {warm_exc}", flush=True)
+            logger.warning("VLM compile warmup failed: %s", warm_exc, exc_info=True)
+
+        _set_ai_status("ready")
         free_gib = torch.cuda.mem_get_info()[0] / (1024 ** 3)
         print(
             f"[VLM] READY device={_device} vram_free={free_gib:.1f} GiB "
-            "(ilk Kare Al compile icin biraz surebilir)",
+            f"(PagedInferenceEngine)",
             flush=True,
         )
         logger.info(
-            "Falcon-Perception CUDA ready (device=%s, dtype=%s, vram=%.1f GiB free)",
+            "Falcon-Perception CUDA ready (device=%s, dtype=%s, vram=%.1f GiB free, paged)",
             _device,
             _real_dtype,
             free_gib,
@@ -170,60 +302,39 @@ def _ai_worker_thread():
     except Exception as e:
         print(f"[VLM] ERROR worker init failed: {e}", flush=True)
         logger.error("AI Worker init failed: %s", e, exc_info=True)
-        _ai_status = "error"
+        _set_ai_status("error")
         return
 
     while True:
-        future, batch, max_new_tokens, max_stones = _ai_request_queue.get()
+        future, pil_image, text_prompt, max_new_tokens, max_stones = _ai_request_queue.get()
         if future is None:
             break
         try:
             print(
                 f"[VLM] generate basliyor max_new_tokens={max_new_tokens} "
-                f"max_stones={max_stones} task=detection",
+                f"max_stones={max_stones} task=detection engine=paged",
                 flush=True,
             )
-            stop_ids = _stop_token_ids_for(max_stones)
-            t_xfer0 = time.perf_counter()
-            gpu_batch = _batch_to_device(batch)
-            t_xfer1 = time.perf_counter()
-            t_gen0 = time.perf_counter()
-            tokens, aux_outputs = _engine.generate(
-                **gpu_batch,
+            tokens, aux_outputs, input_len, gen_sec, stats = _run_paged_generate(
+                pil_image,
+                text_prompt or "",
                 max_new_tokens=max_new_tokens,
-                temperature=0.0,
-                stop_token_ids=stop_ids or None,
-                seed=42,
-                task="detection",
+                max_stones=max_stones,
             )
-            t_gen1 = time.perf_counter()
-            xfer_sec = t_xfer1 - t_xfer0
-            gen_sec = t_gen1 - t_gen0
-            # Girdi uzunluğu: sadece generate edilen kısmı decode etmek için
-            try:
-                tok = batch.get("tokens")
-                if tok is not None:
-                    import torch
-
-                    if torch.is_tensor(tok):
-                        input_len = int(tok.shape[-1])
-                    else:
-                        input_len = int(np.asarray(tok).shape[-1])
-                else:
-                    input_len = 0
-            except Exception:
-                input_len = 0
+            prefill_ms = getattr(stats, "prefill_ms", None) if stats else None
+            decode_ms = getattr(stats, "decode_wall_ms", None) if stats else None
+            finalize_ms = getattr(stats, "finalize_ms", None) if stats else None
             print(
                 f"[TIMING] VLM generate: {gen_sec:.3f}s "
-                f"(h2d={xfer_sec:.3f}s) input_len={input_len} "
-                f"max_new_tokens={max_new_tokens} max_stones={max_stones} "
-                f"task=detection",
+                f"input_len={input_len} max_new_tokens={max_new_tokens} "
+                f"max_stones={max_stones} task=detection engine=paged "
+                f"prefill_ms={prefill_ms} decode_ms={decode_ms} finalize_ms={finalize_ms}",
                 flush=True,
             )
             print("[VLM] generate bitti", flush=True)
             if not future.done():
-                # tokens / aux / input_len / worker generate süresi
-                future.set_result((tokens, aux_outputs, input_len, gen_sec))
+                # tokens = yalnizca generate edilen id'ler → format icin input_len=0
+                future.set_result((tokens, aux_outputs, 0, gen_sec, stats))
         except Exception as e:
             if not future.done():
                 future.set_exception(e)
@@ -295,7 +406,6 @@ def _format_bboxes_raw(raw: Any) -> str:
             return {k: _round(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [_round(v) for v in obj]
-        # numpy skaler
         try:
             import numpy as np
 

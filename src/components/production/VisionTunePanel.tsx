@@ -25,6 +25,9 @@ export default function VisionTunePanel({
           </h3>
           <span className="text-[10px] font-medium text-purple-200 bg-purple-900/60 px-2 py-0.5 rounded">
             {stones.length} taş
+            {aiSnapshotResult?.max_stones != null
+              ? ` / limit ${aiSnapshotResult.max_stones}`
+              : ''}
           </span>
         </div>
         <p className="text-[9.5px] text-muted-foreground leading-tight">

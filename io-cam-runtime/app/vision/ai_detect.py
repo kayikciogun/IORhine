@@ -47,7 +47,6 @@ from app.vision.vlm_worker import (
     _AI_MAX_NEW_TOKENS_SINGLE,
     _AI_MODEL_PATH,
     _DEFAULT_MAX_STONES,
-    _batch_to_device,
     _format_bboxes_raw,
     _format_vlm_tokens,
     _max_new_tokens_for,
@@ -122,9 +121,8 @@ def ai_snapshot_detect(
         return objects, out, ""
 
     from falcon_perception import build_prompt_for_task
-    from falcon_perception.batch_inference import process_batch_and_generate
 
-    # Ön küçültme: ``process_batch_and_generate`` öncesi cv2 ile küçült (dataset ile aynı).
+    # Ön küçültme: PagedInferenceEngine Sequence tokenizasyonu öncesi cv2 ile küçült.
     t_pre0 = time.perf_counter()
     small, _, _, _ = resize_for_vlm(frame, max_dim=_AI_IMG_MAX_DIM)
     pil_image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
@@ -132,35 +130,25 @@ def ai_snapshot_detect(
     subject = (prompt or "").strip() or "stone"
     text_prompt = build_prompt_for_task(subject, "detection")
     max_new_tokens = _max_new_tokens_for(max_stones)
-    max_length = min(4096, int(getattr(_worker_mod._model_args, "max_seq_len", 4096)))
-    batch = process_batch_and_generate(
-        _worker_mod._tokenizer,
-        [(pil_image, text_prompt)],
-        max_length=max_length,
-        min_dimension=_AI_IMG_MIN_DIM,
-        max_dimension=_AI_IMG_MAX_DIM,
-    )
     t_pre1 = time.perf_counter()
     print(
         f"[TIMING] preprocess: {t_pre1 - t_pre0:.3f}s "
-        f"(task=detection max_new_tokens={max_new_tokens} max_stones={max_stones})",
+        f"(task=detection max_new_tokens={max_new_tokens} max_stones={max_stones} engine=paged)",
         flush=True,
     )
 
     future: "Future[Any]" = Future()
+    req = (future, pil_image, text_prompt, max_new_tokens, max_stones)
     if skip_if_busy:
         # Non-blocking put: queue doluysa ``queue.Full`` → bu frame atlanır.
         try:
-            _worker_mod._ai_request_queue.put_nowait((future, batch, max_new_tokens, max_stones))
+            _worker_mod._ai_request_queue.put_nowait(req)
         except queue.Full:
             return objects, out, text_prompt
     else:
         # Blocking put — snapshot/job için önceki iş bitsin (varsayılan 60s).
         try:
-            _worker_mod._ai_request_queue.put(
-                (future, batch, max_new_tokens, max_stones),
-                timeout=busy_timeout_s,
-            )
+            _worker_mod._ai_request_queue.put(req, timeout=busy_timeout_s)
         except queue.Full:
             print(
                 f"[VLM] skip — AI queue dolu (busy timeout {busy_timeout_s:.1f}s)",
@@ -185,7 +173,10 @@ def ai_snapshot_detect(
     t_wait1 = time.perf_counter()
 
     worker_gen_sec = -1.0
-    if isinstance(result, tuple) and len(result) == 4:
+    stats = None
+    if isinstance(result, tuple) and len(result) == 5:
+        tokens, aux_outputs, input_len, worker_gen_sec, stats = result
+    elif isinstance(result, tuple) and len(result) == 4:
         tokens, aux_outputs, input_len, worker_gen_sec = result
     elif isinstance(result, tuple) and len(result) == 3:
         tokens, aux_outputs, input_len = result
@@ -203,10 +194,14 @@ def ai_snapshot_detect(
     aux = aux_outputs[0]
     n_tok = len(gen_ids)
     ms_per = (worker_gen_sec * 1000.0 / n_tok) if n_tok > 0 and worker_gen_sec >= 0 else 0.0
+    prefill_ms = getattr(stats, "prefill_ms", None) if stats else None
+    decode_ms = getattr(stats, "decode_wall_ms", None) if stats else None
+    finalize_ms = getattr(stats, "finalize_ms", None) if stats else None
     print(
         f"[TIMING] VLM wait+generate: {wait_sec:.3f}s "
         f"(worker_generate={worker_gen_sec:.3f}s "
-        f"gen_tokens={n_tok} ~{ms_per:.1f}ms/token incl.prefill)",
+        f"gen_tokens={n_tok} ~{ms_per:.1f}ms/token "
+        f"prefill_ms={prefill_ms} decode_ms={decode_ms} finalize_ms={finalize_ms})",
         flush=True,
     )
 
@@ -260,7 +255,7 @@ def ai_snapshot_detect(
         return objects, out, vlm_reply
 
     img_h, img_w = frame.shape[:2]
-    from app.vision.orientation_classifier import classify_orientation_onnx
+    from app.vision.orientation_classifier import classify_orientations_batch
 
     # Tüm taşların merkezleri — değen taşlarda kontur ayrımı (Voronoi) için
     # her taşın kendi merkezini komşularından ayırt edebilmemiz gerekiyor.
@@ -269,7 +264,9 @@ def ai_snapshot_detect(
     ]
 
     angle_total = 0.0
-    classify_total = 0.0
+    stones_meta: list[dict[str, Any]] = []
+    boxes: list[tuple[int, int, int, int]] = []
+
     for i, (xy, size) in enumerate(detections, 1):
         # VLM küçük görüntüden normalize (0-1) koordinat döndürür. Orijinal
         # görüntüye geri ölçekle.
@@ -301,16 +298,11 @@ def ai_snapshot_detect(
         # Yakın/değen taşlarda ROI bbox'ları örtüşünce Canny komşu taşların
         # kenarlarını da algılıyordu. Çözüm: ROI boyutunda Voronoi maskesi
         # hesaplayıp Canny'nin EDGE MAP'ine uygula (girdiye değil).
-        # Böylece:
-        #  - Girdi piksel gradyanları bozulmaz → yapay Canny kenarı yok.
-        #  - Komşu taşa ait kenarlar edge map'ten siliniyor.
-        #  - Maske yalnızca ROI pikselleri üzerinde hesaplanıyor (hızlı).
         t_a = time.perf_counter()
         roi_voronoi_mask: np.ndarray | None = None
         if other_centers:
             _roi_h = by2 - by1
             _roi_w = bx2 - bx1
-            # ROI'nin frame-koordinatlarındaki ızgara (sadece ROI kadar piksel)
             _ys_r, _xs_r = np.mgrid[by1:by2, bx1:bx2]
             _own_dist_sq = (_xs_r - cx) ** 2 + (_ys_r - cy) ** 2
             _other_min_dist_sq = np.full((_roi_h, _roi_w), np.inf, dtype=np.float64)
@@ -334,28 +326,45 @@ def ai_snapshot_detect(
             other_centers=other_centers,
             voronoi_mask=roi_voronoi_mask,
         )
-        t_b = time.perf_counter()
-
-        # Yön: VLM'in verdiği tam bbox crop → ONNX classifier
-        orientation, orient_conf = classify_orientation_onnx(
-            frame, bx1, by1, bx2, by2,
-        )
-        t_c = time.perf_counter()
-        angle_sec = t_b - t_a
-        classify_sec = t_c - t_b
+        angle_sec = time.perf_counter() - t_a
         angle_total += angle_sec
-        classify_total += classify_sec
-        print(
-            f"[TIMING] stone {i}: angle={angle_sec:.3f}s classify={classify_sec:.3f}s",
-            flush=True,
-        )
+        print(f"[TIMING] stone {i}: angle={angle_sec:.3f}s", flush=True)
+
+        boxes.append((bx1, by1, bx2, by2))
+        stones_meta.append({
+            "i": i,
+            "cx": cx,
+            "cy": cy,
+            "bx1": bx1,
+            "by1": by1,
+            "bx2": bx2,
+            "by2": by2,
+            "box_w": box_w,
+            "box_h": box_h,
+            "angle": angle,
+        })
+
+    # Tek session.run — N crop (önceki: taş başına ayrı run ≈ 10× overhead)
+    t_cls0 = time.perf_counter()
+    orient_results = classify_orientations_batch(frame, boxes)
+    classify_total = time.perf_counter() - t_cls0
+    print(
+        f"[TIMING] classify_batch: {classify_total:.3f}s ({len(boxes)} stones)",
+        flush=True,
+    )
+
+    for meta, (orientation, orient_conf) in zip(stones_meta, orient_results):
+        i = meta["i"]
+        cx, cy = meta["cx"], meta["cy"]
+        bx1, by1, bx2, by2 = meta["bx1"], meta["by1"], meta["bx2"], meta["by2"]
+        box_w, box_h = meta["box_w"], meta["box_h"]
+        angle = meta["angle"]
         _vlog(
             "stone#%d cx=%d cy=%d angle=%.1f orient=%s conf=%.2f",
             i, cx, cy, angle, orientation, orient_conf,
         )
 
         if draw:
-            # VLM hesaplanan bbox — orientation false ise kırmızı çiz
             box_color = COL_ORIENT_FALSE if orientation == "false" else COL_BBOX
             cv2.rectangle(out, (bx1, by1), (bx2, by2), box_color, 2)
             cv2.circle(out, (cx, cy), 5, COL_CENTER, -1)
@@ -397,7 +406,7 @@ def ai_snapshot_detect(
     post_sec = angle_total + classify_total
     print(
         f"[TIMING] postprocess: angle_sum={angle_total:.3f}s "
-        f"classify_sum={classify_total:.3f}s ({len(detections)} stones)",
+        f"classify_batch={classify_total:.3f}s ({len(detections)} stones)",
         flush=True,
     )
     print(

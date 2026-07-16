@@ -54,6 +54,15 @@ export function runtimeEventToLogText(ev: RuntimeEvent): string {
       return 'glue_sheet_exhausted';
     case 'job_complete':
       return 'job_complete';
+    case 'ai_status': {
+      const s = ev.data.status;
+      if (s === 'loading') return 'AI: model yükleniyor…';
+      if (s === 'warming_up') return 'AI: model derleniyor (ilk açılış)…';
+      if (s === 'ready') return 'AI: hazır';
+      if (s === 'error') return 'AI: yükleme hatası';
+      if (s === 'orientation_ready') return 'AI: orientation ONNX hazır';
+      return `AI: ${s}`;
+    }
     default:
       return JSON.stringify(ev);
   }

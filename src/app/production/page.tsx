@@ -20,6 +20,7 @@ import {
   getJobStatus,
   resetGlueSheet,
   runSnapshotDetect,
+  type AiStatus,
   type SnapshotDetectResult,
   uploadJob,
 } from '@/lib/runtimeClient';
@@ -78,9 +79,13 @@ export default function ProductionPage() {
   const [detectedObjects, setDetectedObjects] = useState<DetectedStone[]>([]);
   const [aiSnapshotResult, setAiSnapshotResult] = useState<SnapshotDetectResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  /** VLM: uninitialized → loading → warming_up → ready | error */
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   /** Seri mod: cevap gelir gelmez yeni kare tespiti. */
   const [serialDetect, setSerialDetect] = useState(false);
   const [detectFps, setDetectFps] = useState<number | null>(null);
+  /** Son tek-kare (veya seri) AI tespit süresi — sağ üst HUD. */
+  const [detectLatencyMs, setDetectLatencyMs] = useState<number | null>(null);
   const serialDetectRef = useRef(false);
   const detectFpsEmaRef = useRef(0);
   const [csvRows, setCsvRows] = useState<PlacementCsvRow[]>([]);
@@ -150,6 +155,9 @@ export default function ProductionPage() {
       } else if (res.objects) {
         appendLog(`AI Snapshot: ${res.objects.length} nesne tespit edildi.`);
       }
+      if (res.ai_status) {
+        setAiStatus(res.ai_status as AiStatus);
+      }
     },
     [appendLog],
   );
@@ -168,7 +176,9 @@ export default function ProductionPage() {
           draw: true,
         });
         applySnapshotResult(res, { quiet });
-        const elapsed = (performance.now() - t0) / 1000;
+        const elapsedMs = performance.now() - t0;
+        setDetectLatencyMs(Math.round(elapsedMs));
+        const elapsed = elapsedMs / 1000;
         if (res.ok && elapsed > 0.001) {
           const inst = 1 / elapsed;
           detectFpsEmaRef.current =
@@ -250,6 +260,12 @@ export default function ProductionPage() {
         refreshBackoffRef.current = Math.min(refreshBackoffRef.current * 2, 32000);
         return;
       }
+      try {
+        const hj = (await health.json()) as { ai_status?: AiStatus };
+        if (hj.ai_status) setAiStatus(hj.ai_status);
+      } catch {
+        /* ignore */
+      }
       const cal = await getCalibration();
       setCalSummary(cal);
       try {
@@ -260,8 +276,6 @@ export default function ProductionPage() {
         setGlueStatus(null);
         setGlueError(e instanceof Error ? e.message : String(e));
       }
-      // AI durumu artık kamera frame'inden (ws/camera) geliyor — her frame'de
-      // ``ai_status`` field'ı var. Burada ayrıca poll yapmaya gerek yok.
     } catch {
       setRuntimeOnline(false);
       runtimeOnlineRef.current = false;
@@ -345,6 +359,18 @@ export default function ProductionPage() {
           setTotal(ev.data.total);
         }
         if (ev.evt === 'placed') setIndex(ev.data.i);
+        if (ev.evt === 'ai_status') {
+          const s = ev.data.status;
+          if (
+            s === 'uninitialized' ||
+            s === 'loading' ||
+            s === 'warming_up' ||
+            s === 'ready' ||
+            s === 'error'
+          ) {
+            setAiStatus(s);
+          }
+        }
         if (ev.evt === 'glue_cell') {
           // Backend ``glue_cell`` event'i 1-indeksli cell numarası yollar
           // (``glue.cursor + 1``). Frontend tarafında ``GlueSheetStatus.cursor``
@@ -523,8 +549,10 @@ export default function ProductionPage() {
               detectedCount={detectedObjects.length}
               cameraReady={cameraReady}
               aiLoading={aiLoading}
+              aiStatus={aiStatus}
               serialDetect={serialDetect}
               detectFps={detectFps}
+              detectLatencyMs={detectLatencyMs}
             />
           </div>
 
@@ -548,7 +576,11 @@ export default function ProductionPage() {
                 <Switch
                   checked={serialDetect}
                   onCheckedChange={handleSerialToggle}
-                  disabled={loading || !runtimeOnline}
+                  disabled={
+                    loading ||
+                    !runtimeOnline ||
+                    (aiStatus != null && aiStatus !== 'ready')
+                  }
                   className="h-5 w-9 data-[state=checked]:bg-purple-600 [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                 />
                 <span className={serialDetect ? 'text-purple-300 font-medium' : ''}>
@@ -567,13 +599,36 @@ export default function ProductionPage() {
                 type="button"
                 variant="default"
                 size="sm"
-                disabled={aiLoading || serialDetect}
+                disabled={
+                  aiLoading ||
+                  serialDetect ||
+                  !runtimeOnline ||
+                  (aiStatus != null && aiStatus !== 'ready')
+                }
                 onClick={handleRunAiSnapshot}
                 className="h-7 px-3 text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow-md shadow-purple-900/30 flex items-center gap-1.5"
-                title={serialDetect ? 'Seri mod açık — tek kare için kapatın' : 'Tek kare AI tespiti'}
+                title={
+                  serialDetect
+                    ? 'Seri mod açık — tek kare için kapatın'
+                    : aiStatus === 'warming_up'
+                      ? 'AI modeli derleniyor — hazır olunca deneyin'
+                      : aiStatus === 'loading'
+                        ? 'AI modeli yükleniyor…'
+                        : aiStatus === 'error'
+                          ? 'AI model hatası — runtime logunu kontrol edin'
+                          : 'Tek kare AI tespiti'
+                }
               >
                 <span className="inline-block w-2 h-2 rounded-full bg-purple-300 animate-pulse" />
-                {serialDetect ? 'Seri…' : aiLoading ? 'Analiz…' : 'Kare Al'}
+                {serialDetect
+                  ? 'Seri…'
+                  : aiLoading
+                    ? 'Analiz…'
+                    : aiStatus === 'warming_up'
+                      ? 'Derleniyor…'
+                      : aiStatus === 'loading'
+                        ? 'Yükleniyor…'
+                        : 'Kare Al'}
               </Button>
             </div>
           </div>
@@ -750,8 +805,10 @@ function SnapshotHud({
   detectedCount,
   cameraReady,
   aiLoading,
+  aiStatus,
   serialDetect,
   detectFps,
+  detectLatencyMs,
 }: {
   phase: JobPhase;
   index: number;
@@ -759,8 +816,10 @@ function SnapshotHud({
   detectedCount: number;
   cameraReady: boolean;
   aiLoading: boolean;
+  aiStatus: AiStatus | null;
   serialDetect: boolean;
   detectFps: number | null;
+  detectLatencyMs: number | null;
 }) {
   const phaseColor =
     phase === 'running'
@@ -770,6 +829,18 @@ function SnapshotHud({
         : phase === 'paused'
           ? 'bg-amber-500/80'
           : 'bg-black/60';
+  const aiBadge =
+    aiStatus === 'ready'
+      ? { className: 'bg-emerald-700/90 text-white', label: 'AI hazır' }
+      : aiStatus === 'warming_up'
+        ? { className: 'bg-amber-600/90 text-white', label: 'AI derleniyor…' }
+        : aiStatus === 'loading'
+          ? { className: 'bg-amber-600/90 text-white', label: 'AI yükleniyor…' }
+          : aiStatus === 'error'
+            ? { className: 'bg-red-600/90 text-white', label: 'AI hata' }
+            : aiStatus
+              ? { className: 'bg-black/60 text-white', label: `AI: ${aiStatus}` }
+              : null;
   return (
     <div className="absolute top-2 right-2 flex flex-col gap-1.5 items-end pointer-events-none">
       <Badge className={`${phaseColor} text-white text-[10px] border-0`}>
@@ -783,6 +854,11 @@ function SnapshotHud({
       <Badge className="bg-black/60 text-white text-[10px] border-0">
         {cameraReady ? 'Kamera bağlı' : 'Kamera seç'}
       </Badge>
+      {aiBadge && (
+        <Badge className={`${aiBadge.className} text-[10px] border-0`}>
+          {aiBadge.label}
+        </Badge>
+      )}
       {serialDetect && (
         <Badge className="bg-purple-700/90 text-white text-[10px] border-0">
           Seri{detectFps != null ? ` · ${detectFps.toFixed(1)} FPS` : '…'}
@@ -791,6 +867,11 @@ function SnapshotHud({
       {aiLoading && !serialDetect && (
         <Badge className="bg-purple-700/90 text-white text-[10px] border-0">
           Analiz…
+        </Badge>
+      )}
+      {detectLatencyMs != null && !aiLoading && (
+        <Badge className="bg-black/60 text-white text-[10px] border-0 tabular-nums">
+          {detectLatencyMs} ms
         </Badge>
       )}
       {detectedCount > 0 && (

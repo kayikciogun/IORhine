@@ -85,7 +85,9 @@ class Settings(BaseSettings):
     # VLM detection — .env'den canlı okunur (load_settings); frontend kodu değişmez.
     vlm_prompt: str = "single black rhinestone"
     # Tek VLM çağrısında tarama limiti — saçaktaki true taşlardan biri seçilir.
-    vlm_max_stones: int = Field(default=10, ge=1, le=20)
+    vlm_max_stones: int = Field(default=10, ge=1, le=100)
+    # HuggingFace model id — 0.6B: tiiuae/Falcon-Perception, 0.3B: tiiuae/Falcon-Perception-300M
+    vlm_model: str = "tiiuae/Falcon-Perception"
 
     # Orientation CNN (ONNX) — VLM bbox crop → true / false
     orientation_model_dir: Path = Field(

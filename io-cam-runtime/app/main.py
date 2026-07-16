@@ -25,16 +25,45 @@ async def lifespan(_app: FastAPI):
     apply_motion_config(settings, load_motion_config(settings.calibration_dir))
     init_runtime_store()
 
-    # Server başlar başlamaz VLM modelini arka plan thread'inde yükle ve ısıt
-    from app.vision.ai_detect import get_ai_model
-    get_ai_model()
-
-    # Son kaydedilen kamerayı arka planda aç — üretim sayfasında "Bağla" tıklaması gerekmesin.
     import asyncio
     import logging
 
     _log = logging.getLogger(__name__)
+    loop = asyncio.get_running_loop()
 
+    # AI durum değişimlerini control WS üzerinden UI'ye yayınla
+    def _broadcast_ai_status(status: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            services.bus.emit("ai_status", {"status": status}),
+            loop,
+        )
+
+    from app.vision.vlm_worker import on_ai_status_change
+
+    on_ai_status_change(_broadcast_ai_status)
+
+    # Server başlar başlamaz VLM modelini arka plan thread'inde yükle + compile warmup
+    from app.vision.ai_detect import get_ai_model
+
+    get_ai_model()
+
+    async def _preload_orientation() -> None:
+        from app.vision.orientation_classifier import preload_orientation_model
+
+        try:
+            ok = await asyncio.to_thread(preload_orientation_model)
+            if ok:
+                _log.info("Orientation ONNX model önceden yüklendi")
+                await services.bus.emit(
+                    "ai_status",
+                    {"status": "orientation_ready", "detail": "orientation_onnx"},
+                )
+            else:
+                _log.warning("Orientation ONNX ön yükleme atlandı / başarısız")
+        except Exception as e:
+            _log.warning("Orientation ONNX ön yükleme hatası: %s", e)
+
+    # Son kaydedilen kamerayı arka planda aç — üretim sayfasında "Bağla" tıklaması gerekmesin.
     async def _restore_saved_camera() -> None:
         from app.runtime.camera_sources import load_saved_config
 
@@ -52,6 +81,7 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             _log.warning("Kayıtlı kamera otomatik açılamadı: %s", e)
 
+    asyncio.create_task(_preload_orientation())
     asyncio.create_task(_restore_saved_camera())
     yield
     # Lifespan teardown: motion driver + kamera thread/VideoCapture leak'i
@@ -94,9 +124,10 @@ app.include_router(ws.router)
 @app.get("/health")
 async def health():
     try:
-        from app.vision.ai_detect import _ai_status
-        ai_status = _ai_status
+        from app.vision.ai_detect import ai_status as _ai_status_fn
+
+        status = _ai_status_fn()
     except ImportError:
-        ai_status = "uninitialized"
-        
-    return {"status": "ok", "mock": settings.mock_hardware, "ai_status": ai_status}
+        status = "uninitialized"
+
+    return {"status": "ok", "mock": settings.mock_hardware, "ai_status": status}
