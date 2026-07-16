@@ -76,7 +76,21 @@ function ensureEnvLocal() {
     if (existsSync(example)) {
       writeFileSync(p, readFileSync(example, "utf8"), "utf8");
     } else {
-      writeFileSync(p, `NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL}\n`, "utf8");
+      writeFileSync(
+        p,
+        [
+          `# Tek .env — frontend + runtime`,
+          `NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL}`,
+          `IO_CAM_MOCK_HARDWARE=0`,
+          `IO_CAM_CORS_ORIGINS=http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}`,
+          `IO_CAM_VLM_PROMPT=stone`,
+          `IO_CAM_VLM_MAX_STONES=10`,
+          `# 0.6B: tiiuae/Falcon-Perception  |  0.3B: tiiuae/Falcon-Perception-300M`,
+          `IO_CAM_VLM_MODEL=tiiuae/Falcon-Perception`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
     }
     ok(".env oluşturuldu");
   }
@@ -148,6 +162,61 @@ function waitHealth(timeoutSec = 45) {
   });
 }
 
+function verifyRuntimeDeps(python) {
+  log("Runtime bağımlılık doğrulama…");
+  const script = `
+import sys
+errors, warns = [], []
+try:
+    import falcon_perception  # noqa: F401
+    from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
+except Exception as e:
+    errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
+try:
+    import torch
+    if not torch.cuda.is_available():
+        warns.append(f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer")
+except Exception as e:
+    errors.append(f"torch: {e}")
+try:
+    import onnxruntime as ort
+    if ort.__version__ != "1.20.2":
+        errors.append(
+            f"onnxruntime-gpu sürümü {ort.__version__} — beklenen 1.20.2 "
+            "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
+        )
+    providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" not in providers:
+        warns.append(f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır")
+except Exception as e:
+    errors.append(f"onnxruntime: {e}")
+for w in warns:
+    print(f"WARN: {w}", flush=True)
+if errors:
+    for e in errors:
+        print(f"ERROR: {e}", flush=True)
+    sys.exit(1)
+print(
+    "OK: falcon-perception, PagedInferenceEngine, "
+    f"onnxruntime={__import__('onnxruntime').__version__}, "
+    f"torch={__import__('torch').__version__}, "
+    f"cuda={__import__('torch').cuda.is_available()}",
+    flush=True,
+)
+`;
+  const r = spawnSync(python, ["-c", script], {
+    encoding: "utf8",
+    shell: IS_WIN,
+    cwd: RUNTIME_DIR,
+  });
+  if (r.stdout) process.stdout.write(r.stdout);
+  if (r.stderr) process.stderr.write(r.stderr);
+  if (r.status !== 0) {
+    die("Runtime bağımlılık doğrulama başarısız — pip install / CUDA kurulumunu kontrol et");
+  }
+  ok("Runtime bağımlılıkları doğrulandı");
+}
+
 function installAll(python) {
   if (SKIP_INSTALL) {
     warn("Kurulum atlandı (--no-install)");
@@ -155,9 +224,22 @@ function installAll(python) {
   }
   log("Frontend bağımlılıkları (npm install)…");
   runSync(IS_WIN ? "npm.cmd" : "npm", ["install"], { cwd: ROOT });
-  log("Runtime bağımlılıkları (pip install -e .)…");
-  runSync(python, ["-m", "pip", "install", "-e", "."], { cwd: RUNTIME_DIR });
+  log("Runtime bağımlılıkları (pip install -e .[dev])…");
+  runSync(python, ["-m", "pip", "install", "-U", "pip", "wheel"], {
+    cwd: RUNTIME_DIR,
+  });
+  // Path+[dev] — Windows shell'de ``.[dev]`` köşeli parantez sorununu önler
+  runSync(python, ["-m", "pip", "install", "-e", `${RUNTIME_DIR}[dev]`], {
+    cwd: ROOT,
+  });
+  // Eski CUDA-13 ORT wheel kalmışsa pin'i zorla
+  runSync(
+    python,
+    ["-m", "pip", "install", "--force-reinstall", "--no-deps", "onnxruntime-gpu==1.20.2"],
+    { cwd: RUNTIME_DIR },
+  );
   ok("Bağımlılıklar hazır");
+  verifyRuntimeDeps(python);
 }
 
 function cleanup() {

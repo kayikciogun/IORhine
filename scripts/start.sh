@@ -39,11 +39,16 @@ IO-CAM başlatıcı
 
 Seçenekler:
   --mock              IO_CAM_MOCK_HARDWARE=1 (kamera/seri port olmadan)
-  --install           Bağımlılıkları kur ve çık
+  --dev               uvicorn --reload + VLM satırlarını terminale yansıt
+  --install           Bağımlılıkları kur, doğrula ve çık
   --no-install        npm/pip kurulumunu atla
   --skip-runtime      Sadece Next.js
   --skip-frontend     Sadece Python runtime
   --help              Bu metin
+
+Kurulumda zorunlu pinler:
+  onnxruntime-gpu==1.20.2   (CUDA 12; 1.27+ CUDA 13 — kullanma)
+  falcon-perception[torch]  (PagedInferenceEngine)
 
 Ortam değişkenleri:
   RUNTIME_PORT        Varsayılan 8000
@@ -146,7 +151,14 @@ ensure_env_local() {
     cp "$example_file" "$env_file"
   else
     cat >"$env_file" <<EOF
+# Tek .env — frontend + runtime
 NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL}
+IO_CAM_MOCK_HARDWARE=0
+IO_CAM_CORS_ORIGINS=http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}
+IO_CAM_VLM_PROMPT=stone
+IO_CAM_VLM_MAX_STONES=10
+# 0.6B: tiiuae/Falcon-Perception  |  0.3B: tiiuae/Falcon-Perception-300M
+IO_CAM_VLM_MODEL=tiiuae/Falcon-Perception
 EOF
   fi
   ok ".env oluşturuldu (NEXT_PUBLIC_RUNTIME_URL=${RUNTIME_URL})"
@@ -175,8 +187,70 @@ install_runtime() {
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
   python -m pip install -U pip wheel -q
+  # Editable install — pyproject pin'leri (onnxruntime-gpu==1.20.2, falcon-perception[torch])
   pip install -e "${RUNTIME_DIR}[dev]" -q
+  # Eski CUDA-13 ORT wheel kalmışsa pin'i zorla (1.27+ CPU'ya düşer / cuDNN 13 ister)
+  pip install --force-reinstall --no-deps "onnxruntime-gpu==1.20.2" -q
   ok "pip install -e io-cam-runtime[dev] tamam"
+  verify_runtime_deps
+}
+
+verify_runtime_deps() {
+  log "Runtime bağımlılık doğrulama…"
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+  python - <<'PY'
+import sys
+
+errors: list[str] = []
+warns: list[str] = []
+
+try:
+    import falcon_perception  # noqa: F401
+    from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
+except Exception as e:
+    errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
+
+try:
+    import torch
+    if not torch.cuda.is_available():
+        warns.append(
+            f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer"
+        )
+except Exception as e:
+    errors.append(f"torch: {e}")
+
+try:
+    import onnxruntime as ort
+    ver = ort.__version__
+    if ver != "1.20.2":
+        errors.append(
+            f"onnxruntime-gpu sürümü {ver} — beklenen 1.20.2 "
+            "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
+        )
+    providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" not in providers:
+        warns.append(
+            f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır (~10x yavaş)"
+        )
+except Exception as e:
+    errors.append(f"onnxruntime: {e}")
+
+for w in warns:
+    print(f"WARN: {w}", flush=True)
+if errors:
+    for e in errors:
+        print(f"ERROR: {e}", flush=True)
+    sys.exit(1)
+print(
+    "OK: falcon-perception, PagedInferenceEngine, "
+    f"onnxruntime={__import__('onnxruntime').__version__}, "
+    f"torch={__import__('torch').__version__}, "
+    f"cuda={__import__('torch').cuda.is_available()}",
+    flush=True,
+)
+PY
+  ok "Runtime bağımlılıkları doğrulandı"
 }
 
 install_all() {

@@ -12,8 +12,8 @@ DXF / DWG  →  Kontür seçimi  →  Yerleştirme CSV  →  JobRunner
                                                           │
                                               Pick → Rotate → Glue → Place
                                                           │
-                                              Falcon-Perception (CUDA)
-                                              + OpenCV açı + ONNX orientation
+                                              Falcon-Perception PagedInferenceEngine (CUDA)
+                                              + OpenCV açı + ONNX orientation (CUDA)
                                               Marlin G-code (serial)
 ```
 
@@ -21,7 +21,7 @@ DXF / DWG  →  Kontür seçimi  →  Yerleştirme CSV  →  JobRunner
 
 ## Hızlı başlangıç
 
-**Gereksinimler:** Node.js 20+, Python 3.11+, curl · VLM için NVIDIA GPU + CUDA (torch)
+**Gereksinimler:** Node.js 20+, Python 3.11+, curl · VLM / orientation için NVIDIA GPU + CUDA 12 (torch cu128)
 
 ```bash
 # Her şeyi kur ve başlat (Next.js :9002 + runtime :8000)
@@ -30,29 +30,65 @@ npm run start:all
 # Kamera / seri port yokken mock donanım
 npm run start:all:mock
 
-# Sadece bağımlılık kurulumu
+# Sadece bağımlılık kurulumu (+ doğrulama)
 npm run install:all
+
+# Bash (Linux/macOS) — venv + pip[dev] + ORT pin doğrulama
+./scripts/start.sh
+./scripts/start.sh --install
+./scripts/start.sh --mock
 ```
+
+İlk kurulumda `start.sh` / `start.mjs`:
+
+1. `npm install`
+2. `pip install -e io-cam-runtime[dev]` (falcon-perception, torch CUDA, …)
+3. `onnxruntime-gpu==1.20.2` pin’ini zorlar (1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)
+4. Import doğrulama: `PagedInferenceEngine`, torch CUDA, ORT `CUDAExecutionProvider`
 
 | Adres | Açıklama |
 |-------|----------|
 | http://localhost:9002/ | Planlama |
 | http://localhost:9002/production | Üretim |
-| http://localhost:8000/health | Runtime sağlık (AI durumu dahil) |
+| http://localhost:8000/health | Runtime sağlık (`ai_status` dahil) |
 
-`.env` yoksa `scripts/start.sh` (veya `start.mjs`) `.env.example`'dan otomatik oluşturur. Tek dosya — frontend (`NEXT_PUBLIC_*`) ve runtime (`IO_CAM_*`) aynı `.env`'i okur (`settings.py` yalnızca repo kökü `.env`):
+`.env` yoksa script `.env.example`’dan (veya yerleşik şablondan) oluşturur. Tek dosya — frontend (`NEXT_PUBLIC_*`) ve runtime (`IO_CAM_*`) aynı `.env`'i okur:
 
 ```env
 NEXT_PUBLIC_RUNTIME_URL=http://127.0.0.1:8000
-IO_CAM_VLM_PROMPT=single black rhinestone
+IO_CAM_VLM_PROMPT=stone
 IO_CAM_VLM_MAX_STONES=10
+IO_CAM_VLM_MODEL=tiiuae/Falcon-Perception
 # IO_CAM_ORIENTATION_MODEL_DIR=/absolute/path/to/orientation_model_v2
 ```
 
-`VLM_PROMPT` / `VLM_MAX_STONES` her “Kare Al”da yeniden okunur — runtime restart gerekmez.  
-Job pick varsayılanı **tek seferde çok taş** (`10`): VLM konumları bulur, ONNX her crop’a orientation verir, face-up (`true`) olan seçilir.
+| Değişken | Anlam |
+|----------|--------|
+| `IO_CAM_VLM_PROMPT` | Detection subject — her “Kare Al”da yeniden okunur |
+| `IO_CAM_VLM_MAX_STONES` | Tek VLM çağrısında taş üst sınırı (varsayılan 10) |
+| `IO_CAM_VLM_MODEL` | HF id — `tiiuae/Falcon-Perception` (0.6B) veya `…-300M` (0.3B, detection-only) |
 
-macOS’ta gerçek kamera için **Sistem Ayarları → Gizlilik ve Güvenlik → Kamera** altında Terminal (veya kullandığınız IDE) izni gerekir. Yardımcı script: `io-cam-runtime/scripts/request_camera_permission.py`.
+macOS’ta gerçek kamera için **Sistem Ayarları → Gizlilik → Kamera** altında Terminal/IDE izni gerekir: `io-cam-runtime/scripts/request_camera_permission.py`.
+
+---
+
+## AI yaşam döngüsü (startup)
+
+Server ayağa kalkınca VLM **arka planda** yüklenir; HTTP/WS hemen cevap verir:
+
+```
+uninitialized → loading → warming_up → ready
+                              │
+                              ├─ torch.compile (Inductor/Triton) — ilk açılış ~1–2 dk (Windows)
+                              ├─ PagedInferenceEngine + CUDA graph capture
+                              └─ dummy Sequence generate (warmup)
+```
+
+- UI: üretim sayfasında badge (`AI yükleniyor…` / `AI derleniyor…` / `AI hazır`), EventLog, “Kare Al” `ready` olana kadar disabled.
+- Control WS `ai_status` event + `/health` / `/api/vision/status` poll.
+- Orientation ONNX lifespan’ta preload (`CUDAExecutionProvider`; torch import önce → cuDNN DLL).
+
+**Not:** İlk `torch.compile` uzun sürebilir; bu beklenen. Sonraki açılışlar Inductor cache ile genelde daha kısa. UI bu sırada kilitlenmez.
 
 ---
 
@@ -76,81 +112,60 @@ src/
 └── Utils/                    # Offset (WASM), açı, DXF yazıcı
 ```
 
-**Planlama akışı**
-
-1. DXF/DWG yükle → IndexedDB’de saklanır  
-2. Kontür seç (raycasting) → taş tipi ata  
-3. Yapışkan levha şablonu önizle  
-4. CSV üret veya makineye gönder → `/production`
-
 **Üretim sayfası**
 
-- WebSocket: `/ws/control` (job komutları), `/ws/camera` (canlı önizleme)  
-- Job: yükle / start / pause / resume / stop / estop  
-- Kalibrasyon, motion ayarları, yapışkan levha durumu, vision ayarları  
-- AI tespit: kullanıcı “Kare Al” ile `POST /api/vision/snapshot-detect` (canlı stream’de VLM yok)
-
-**Oturum kalıcılığı** (`appSessionStore.ts`)
-
-- `localStorage` — taş tipleri, config, transform, placement snapshot  
-- `IndexedDB` — DXF ham metni  
+- WebSocket: `/ws/control` (job + `ai_status`), `/ws/camera` (önizleme — VLM yok)
+- “Kare Al” → `POST /api/vision/snapshot-detect` (sync detect `asyncio.to_thread`)
+- Sağ üst HUD: faz, kamera, AI durumu, son cevap süresi (ms)
 
 ### Runtime (`io-cam-runtime/`)
 
 ```
 io-cam-runtime/
 ├── app/
-│   ├── main.py               # FastAPI + lifespan (VLM arka plan yükleme)
-│   ├── services.py           # AppServices singleton
+│   ├── main.py               # lifespan: VLM worker + ONNX preload + kamera restore
+│   ├── services.py
 │   ├── api/                  # REST + WebSocket
-│   ├── motion/               # Marlin G-code sürücü
-│   ├── vision/               # Falcon CUDA + OpenCV + ONNX orientation
-│   ├── glue_sheet/           # Hücre reserve/commit
+│   ├── motion/
+│   ├── vision/
+│   │   ├── vlm_worker.py     # PagedInferenceEngine worker + warmup
+│   │   ├── ai_detect.py      # detect pipeline
+│   │   ├── orientation_classifier.py  # batch ONNX (CUDA)
+│   │   └── vlm_preprocess.py
+│   ├── glue_sheet/
 │   └── runtime/              # JobRunner, kamera, EventBus
-├── datasets/                 # Orientation ONNX (orientation_model_v2), Train/eval scriptleri
-├── calibration/              # Homography, fabric, motion, glue state
-├── scripts/                  # macOS kamera izni yardımcısı
-└── tests/                    # pytest
+├── datasets/orientation_model_v2/
+├── calibration/
+└── tests/
 ```
 
-**JobRunner döngüsü** (her placement satırı)
+**JobRunner** (her placement satırı)
 
 | Faz | Ne yapar |
 |-----|----------|
-| **PICK** | Kare al → `detect_all()` (VLM ≤N taş) → her bbox ONNX orientation → `select_stone_to_pick` (face-up) → vakum |
-| **ROTATE** | `delta_c = target − stone.angle` → C ekseni (`rotate_c`) |
-| **GLUE** | `reserve_cell` → motion → `commit` (başarısızsa cursor ilerlemez) |
-| **PLACE** | `fabric_to_robot` → XY → Z in → vakum off → Z out → C sıfırla |
+| **PICK** | Kare → `detect_all` (VLM ≤N) → batch ONNX orientation → face-up seç → vakum |
+| **ROTATE** | `delta_c = target − stone.angle` |
+| **GLUE** | `reserve_cell` → motion → `commit` |
+| **PLACE** | fabric → robot → vakum off |
 
-Pick seçimi: `orientation == "true"` ve confidence eşiği geçen taşlar arasından kafaaya en yakın. Hiç face-up yoksa **aynı kare için VLM tekrar çağrılmaz** — settle + yeni frame; retry aşımında `no_true_orientation_stone`.
+Pick: `orientation == "true"` + confidence; face-up yoksa yeni frame (aynı karede VLM tekrar yok).
 
-Güvenlik: vakum fail streak → ERROR · glue tükenince → PAUSE · istisna → `emergency_stop` (M410) · stop timeout → task cancel.
-
-**Vision pipeline** (`ai_detect.py` + `orientation_classifier.py`)
-
-Roller ayrıdır — VLM yön (true/false) **söylemez**:
+**Vision pipeline**
 
 | Adım | Kim | Ne üretir |
 |------|-----|-----------|
-| 1 | Falcon-Perception (CUDA, `task="detection"`) | Taş bbox’ları (merkez + kaba boyut) — sahne başına **bir** çağrı |
-| 2 | OpenCV (ROI) | Açı: adaptive threshold → kontur → PCA / üçüncü moment |
-| 3 | ONNX ConvNeXt (`orientation_classifier.py`) | Her VLM bbox crop → `true` / `false` / `uncertain` + confidence |
+| 1 | Falcon-Perception **PagedInferenceEngine** (CUDA, `task="detection"`) | Bbox’lar — sahne başına bir çağrı |
+| 2 | OpenCV ROI | Açı (adaptive threshold → PCA / üçüncü moment) |
+| 3 | ONNX ConvNeXt (batch `session.run`, CUDA EP) | `true` / `false` / `uncertain` |
 
-Ek notlar:
+Ek:
 
-- Görüntü VLM öncesi uzun kenarı **512 px**’e iner (`vlm_preprocess.py`).  
-- Inference tek worker + `Future` kuyruğu (`maxsize=1`). Varsayılan `vlm_max_stones=10`.  
-- Asimetrik confidence: `true ≥ 0.80`, `false ≥ 0.50`; altındakiler `uncertain` (yanlış face-up pahalı).  
-- Model lifespan’ta arka plan thread’inde yüklenir · `/health` → `ai_status`.  
-- Log satırındaki `[VLM] … orient=…` birleşik etikettir; **orientation ONNX’den** gelir.
+- Görüntü VLM öncesi max **512 px** (`vlm_preprocess.py`).
+- Inference tek worker + `Future` kuyruğu (`maxsize=1`); girdi `(PIL, prompt, tokens, stones)`.
+- Confidence: `true ≥ 0.80`, `false ≥ 0.50`.
+- `onnxruntime-gpu==1.20.2` (CUDA 12 / cuDNN 9; PyTorch cu128 ile uyumlu). 1.27+ CUDA 13 ister — kullanma.
 
-**Kamera stream protokolü** (`/ws/camera`)
-
-```
-[4-byte big-endian meta uzunluğu][JSON meta][JPEG]
-```
-
-Meta: `fps`, `ai_status`, `mode: "preview"`, isteğe bağlı `camera_warning` / `mock_frame`. Max genişlik varsayılan 640 px.
+**Kamera stream** (`/ws/camera`): `[4-byte BE meta len][JSON][JPEG]` — `fps`, `ai_status`, `mode: "preview"`.
 
 ---
 
@@ -158,19 +173,19 @@ Meta: `fps`, `ai_status`, `mode: "preview"`, isteğe bağlı `camera_warning` / 
 
 | Method | Path | Açıklama |
 |--------|------|----------|
-| GET | `/health` | Durum + mock + AI |
+| GET | `/health` | Durum + mock + `ai_status` |
 | POST | `/api/job` | CSV + DXF yükle |
 | GET | `/api/job/status` | Job fazı |
-| GET/POST | `/api/camera/*` | Cihaz listesi, seçim, status |
-| GET/POST | `/api/motion/*` | Portlar, config, select |
+| GET/POST | `/api/camera/*` | Cihaz, seçim, status |
+| GET/POST | `/api/motion/*` | Portlar, config |
 | GET/POST | `/api/calibration/*` | Homography, fabric |
-| POST | `/api/glue_sheet/from_planning` | Planlamadan strip sync |
-| GET/POST | `/api/glue_sheet/*` | Status, reset |
-| GET/POST | `/api/vision/*` | Ayarlar, status, snapshot-detect |
-| WS | `/ws/control` | start / pause / resume / stop / estop |
-| WS | `/ws/camera` | Binary frame akışı |
+| GET/POST | `/api/glue_sheet/*` | Strip sync, status, reset |
+| GET | `/api/vision/status` | `ai_status` + mesaj |
+| POST | `/api/vision/snapshot-detect` | Tek kare AI tespit |
+| WS | `/ws/control` | start/pause/… + EventBus (`ai_status`, job, …) |
+| WS | `/ws/camera` | Binary frame |
 
-Ortam değişkenleri `IO_CAM_` önekli (`settings.py`): `MOCK_HARDWARE`, `SERIAL_PORT`, `CORS_ORIGINS`, `CONTROL_TOKEN`, `VLM_PROMPT`, `VLM_MAX_STONES`, `ORIENTATION_MODEL_DIR`, kamera FPS/JPEG, motion hızları vb.
+`IO_CAM_` önekli ayarlar: `MOCK_HARDWARE`, `SERIAL_PORT`, `CORS_ORIGINS`, `CONTROL_TOKEN`, `VLM_PROMPT`, `VLM_MAX_STONES`, `VLM_MODEL`, `ORIENTATION_MODEL_DIR`, …
 
 ---
 
@@ -178,21 +193,18 @@ Ortam değişkenleri `IO_CAM_` önekli (`settings.py`): `MOCK_HARDWARE`, `SERIAL
 
 ```
 [Planlama /]
-  DXF → IndexedDB
-  Kontür → StoneType (localStorage)
-  Strip → SVG preview
-       │
-       ▼ makineye gönder
-  glueSheetSync → POST /api/glue_sheet/from_planning
-  placement snapshot → /production
+  DXF → IndexedDB → StoneType → Strip
+       │ makineye gönder
+       ▼
+  glueSheetSync + placement → /production
        │
 [Üretim /production]
-  POST /api/job (CSV + DXF)     WS /ws/control
-                \                 /
-                 ▼               ▼
-              JobRunner (Pick → Rotate → Glue → Place)
-                    │                │
-              detect_all      fabric_to_robot + G-code
+  POST /api/job          WS /ws/control (ai_status, job)
+                \           /
+                 ▼         ▼
+              JobRunner / snapshot-detect
+                    │
+         PagedInferenceEngine → OpenCV açı → ONNX batch
 ```
 
 ---
@@ -200,20 +212,16 @@ Ortam değişkenleri `IO_CAM_` önekli (`settings.py`): `MOCK_HARDWARE`, `SERIAL
 ## Docker
 
 ```bash
-# Mock / geliştirme compose
 docker compose up --build
-
-# Gerçek donanım (Linux örnek paths)
 docker compose -f docker-compose.yml -f docker-compose.real.yml up
 ```
 
 | Servis | Host port |
 |--------|-----------|
-| Next.js (`app`) | 9002 → 3000 |
+| Next.js | 9002 → 3000 |
 | Runtime | 8000 |
 
-Kalibrasyon volume: `io-cam-runtime/calibration` → container `/app/calibration`.  
-SSR için `RUNTIME_INTERNAL_URL=http://runtime:8000`; tarayıcı için `NEXT_PUBLIC_RUNTIME_URL=http://localhost:8000`.
+`RUNTIME_INTERNAL_URL=http://runtime:8000` · `NEXT_PUBLIC_RUNTIME_URL=http://localhost:8000`
 
 ---
 
@@ -221,12 +229,11 @@ SSR için `RUNTIME_INTERNAL_URL=http://runtime:8000`; tarayıcı için `NEXT_PUB
 
 | Katman | Stack |
 |--------|--------|
-| Frontend | Next.js 15, React 18, TypeScript, Three.js, Tailwind, Radix UI |
+| Frontend | Next.js 15, React 18, TypeScript, Three.js, Tailwind, Radix |
 | CAD | dxf-parser, LibreDWG (WASM), Cavalier Contours (WASM) |
 | Backend | FastAPI, uvicorn, OpenCV, NumPy, ezdxf, Pydantic |
-| AI | Falcon-Perception (`falcon-perception[torch]`, CUDA), OpenCV, ONNX Runtime GPU (orientation) |
-| Donanım | Marlin G-code (serial), USB kamera |
-| State | React Context, localStorage, IndexedDB |
+| AI | Falcon-Perception **PagedInferenceEngine** (CUDA + torch.compile), ONNX Runtime GPU **1.20.2** (orientation) |
+| Donanım | Marlin serial, USB kamera |
 | Real-time | WebSocket (binary kamera + JSON kontrol) |
 
 ---
@@ -234,10 +241,10 @@ SSR için `RUNTIME_INTERNAL_URL=http://runtime:8000`; tarayıcı için `NEXT_PUB
 ## Geliştirme
 
 ```bash
-# Frontend + runtime birlikte (dev, uvicorn --reload)
+# Frontend + runtime (dev, uvicorn --reload) — Windows’ta npm run dev
 npm run dev
 
-# Sadece Next.js (Turbopack, :9002)
+# Sadece Next.js (:9002)
 npm run dev:next
 
 # Runtime ayrı
@@ -248,7 +255,8 @@ uvicorn app.main:app --reload --port 8000
 cd io-cam-runtime && pytest
 ```
 
-Loglar: `.logs/runtime.log`, `.logs/frontend.log`.
+Loglar: `.logs/runtime.log`, `.logs/frontend.log`.  
+Sınıflandırma debug: `[CLASSIFY_DEBUG] … inference=…` · VLM: `[TIMING] … engine=paged`.
 
 ---
 
@@ -256,38 +264,24 @@ Loglar: `.logs/runtime.log`, `.logs/frontend.log`.
 
 ```
 io-cam-runtime/datasets/orientation_model_v2/
-  orientation_model.onnx   # ConvNeXt-Tiny, img_size=128
-  class_names.json         # ["false", "true"], img_size
-  best_model.pth           # eğitim checkpoint (yeniden export için)
+  orientation_model.onnx
+  class_names.json         # ["false", "true"], img_size=128
+  best_model.pth
 ```
-
-Eğitim / eval (CUDA önerilir):
 
 ```bash
 cd io-cam-runtime/datasets
-python Train_orientation.py \
-  --coco aug_dataset/aug_dataset \
-  --images aug_dataset/aug_dataset_images \
-  --epochs 20 --img-size 128 --resolution-aug-prob 0.3 \
-  --out ./orientation_model_v2
-
-python eval_confusion.py \
-  --coco aug_dataset/aug_dataset \
-  --images aug_dataset/aug_dataset_images \
-  --checkpoint orientation_model_v2/best_model.pth \
-  --with-thresholds
+python Train_orientation.py --coco … --images … --epochs 20 --img-size 128 --out ./orientation_model_v2
+python eval_confusion.py --checkpoint orientation_model_v2/best_model.pth --with-thresholds
+python export_orientation_onnx.py   # gerekirse dynamo=False
 ```
-
-ONNX export Windows’ta encoding/dynamo sorununa takılırsa: `python export_orientation_onnx.py` (`dynamo=False`).
 
 ---
 
-## Notlar (kod tabanı ile uyum)
+## Notlar
 
-- Üretimde ayrı bir **BootScreen** yok; hazırlık paneller ve health/WS üzerinden yürür.  
-- Canlı kamera stream’inde her karede VLM **çalışmaz**; tespit `snapshot-detect` (ve job döngüsündeki `detect_all`) ile yapılır.  
-- Açı: simetrik olmayan şekillerde üçüncü moment tabanlı yön (`_directed_angle`), eski `_expand_to_360` yaklaşımının yerini almıştır.  
-- Orientation tamamen ONNX (`orientation_classifier.py`); VLM yalnızca konum. Varsayılan dizin `datasets/orientation_model_v2`.  
-- Pick: çoklu bbox → classifier → `select_stone_to_pick`; false çıkınca VLM’i tekrar çağırmak yerine yeni frame.  
-- VLM backend **CUDA/torch**’tır (MLX değil); CUDA yoksa worker `error` durumuna düşer.  
-- `src/services/` ve `src/legacy/` şu an kullanılmıyor.
+- Canlı stream’de VLM yok; tespit `snapshot-detect` / job `detect_all`.
+- VLM motoru **PagedInferenceEngine** (paged KV + CUDA graph); eski `BatchInferenceEngine` yolu değil.
+- Orientation CUDA EP; `torch` önce import edilir (cuDNN DLL). CPU fallback yavaş (~10×).
+- Startup compile ~1–2 dk ilk sefer — UI bilgilendirilir, event loop bloke olmaz (`to_thread`).
+- `src/services/` ve `src/legacy/` kullanılmıyor.
