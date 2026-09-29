@@ -55,6 +55,15 @@ _FALSE_CONFIDENCE_THRESHOLD = 0.50  # false demek için daha az emin yeterli
 def _resolve_model_dir(model_dir: Path | str | None = None) -> Path:
     if model_dir is not None:
         return Path(model_dir)
+    # Kullanıcının "Devreye Al" ile seçtiği versiyon
+    try:
+        from app.vision.orientation_train import read_active_model_dir
+
+        active = read_active_model_dir()
+        if active is not None:
+            return active
+    except Exception:
+        pass
     try:
         from app.config.settings import settings
 

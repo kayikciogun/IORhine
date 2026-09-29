@@ -54,7 +54,7 @@ def test_roi_angle_is_stable_with_noise_and_off_center_distractor():
         frame = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
         angles.append(
-            _roi_angle(frame, 0, 0, 140, 140, is_symmetric=True)
+            _roi_angle(frame, 0, 0, 140, 140, is_symmetric=True)[0]
         )
 
     assert max(_angle_error(angle, 37.0, 180.0) for angle in angles) < 2.0

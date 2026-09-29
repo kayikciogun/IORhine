@@ -136,6 +136,21 @@ export type RuntimeEvent =
   | {
       evt: 'ai_status';
       data: { status: string; detail?: string };
+    }
+  | {
+      evt: 'training_progress';
+      data: {
+        status: string;
+        stone_id?: string;
+        epoch?: number;
+        epochs?: number;
+        train_acc?: number;
+        val_acc?: number;
+        best_val_acc?: number;
+        message?: string;
+        model_dir?: string;
+        error?: string;
+      };
     };
 
 export interface DetectedStone {
@@ -150,6 +165,12 @@ export interface DetectedStone {
   h?: number;
   cx?: number;
   cy?: number;
+  bx1?: number;
+  by1?: number;
+  bx2?: number;
+  by2?: number;
+  /** Full-frame contour points [[x,y], ...] — label overlay için */
+  contour?: [number, number][] | number[][] | null;
   /** true = yüz yukarı, false = ters/yan, uncertain = model yok */
   orientation?: 'true' | 'false' | 'uncertain' | string;
   orientation_confidence?: number;

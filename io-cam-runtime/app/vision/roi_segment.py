@@ -91,6 +91,143 @@ def _split_merged_blob(mask: np.ndarray, roi_center: np.ndarray) -> np.ndarray:
     return out
 
 
+def _suppress_specular(gray: np.ndarray) -> np.ndarray:
+    """Parlak yansımaları bastır — Canny bunları 'kenar' sanıyordu.
+
+    Taş gövdesi koyu, zemin açık; speküler noktalar gövdede delik / sahte
+    kontür üretir. Üst yüzdeyi yerel medyanla değiştir.
+    """
+    soft = gray.copy()
+    # ROI'nin üst %12 parlaklığı speküler aday
+    thr = float(np.percentile(gray, 88))
+    if thr <= 0:
+        return soft
+    bright = gray >= thr
+    if not np.any(bright):
+        return soft
+    # 5x5 medyan — speküler delikleri komşu koyu/orta tona çek
+    med = cv2.medianBlur(gray, 5)
+    soft[bright] = med[bright]
+    return soft
+
+
+def _roi_silhouette(
+    frame: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    *,
+    own_center: tuple[float, float] | None = None,
+    other_centers: list[tuple[float, float]] | None = None,
+    voronoi_mask: np.ndarray | None = None,
+    pad_frac: float = 0.12,
+) -> np.ndarray | None:
+    """Label overlay için taş silüeti — kenar (Canny) değil koyu gövde blob'u.
+
+    Rhinestone / metal çerçeveli taşlarda speküler parlama Canny'yi yanıltır;
+    açık zeminde koyu kütle + morfolojik kapatma + (gerekirse) convex hull
+    çok daha stabil bir boyama maskesi verir.
+
+    Returns:
+        ROI-lokal ``(N,1,2)`` int32 kontür, veya ``None``.
+    """
+    img_h, img_w = frame.shape[:2]
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    pad_x = int(round(bw * pad_frac))
+    pad_y = int(round(bh * pad_frac))
+    rx1 = max(0, x1 - pad_x)
+    ry1 = max(0, y1 - pad_y)
+    rx2 = min(img_w, x2 + pad_x)
+    ry2 = min(img_h, y2 + pad_y)
+    roi = frame[ry1:ry2, rx1:rx2]
+    if roi.size == 0:
+        return None
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    h, w = gray.shape[:2]
+    roi_area = float(h * w)
+    if roi_area < 16:
+        return None
+
+    soft = _suppress_specular(gray)
+    blur = cv2.GaussianBlur(soft, (5, 5), 0)
+
+    # Açık zemin / koyu taş — Otsu INV + adaptive INV, birleşik maske
+    _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    adapt = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 4
+    )
+    mask = cv2.bitwise_or(otsu, adapt)
+
+    mk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, mk, iterations=1)
+    # Speküler delikleri kapat
+    mk2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, mk2, iterations=2)
+
+    # Orijinal bbox'a göre Voronoi (padded ROI koordinatında)
+    if voronoi_mask is not None and voronoi_mask.size > 0:
+        # voronoi orijinal (x1,y1)-(x2,y2) boyutunda — pad'e yerleştir
+        full_vm = np.zeros((h, w), dtype=np.uint8)
+        oy0, ox0 = y1 - ry1, x1 - rx1
+        vh, vw = voronoi_mask.shape[:2]
+        full_vm[oy0 : oy0 + vh, ox0 : ox0 + vw] = voronoi_mask
+        mask = cv2.bitwise_and(mask, full_vm)
+
+    # Merkez çevresi ağırlıklı: Bounding kutunun dışındaki uzak gürültüyü kes
+    cy_r = (own_center[1] - ry1) if own_center else h / 2.0
+    cx_r = (own_center[0] - rx1) if own_center else w / 2.0
+    ys, xs = np.mgrid[0:h, 0:w]
+    # Orijinal bbox yarıçapına yakın bir elips — çok uzak blob'ları ele
+    rad = 0.55 * math.hypot(bw, bh)
+    disk = ((xs - cx_r) ** 2 + (ys - cy_r) ** 2) <= (rad * rad)
+    mask = cv2.bitwise_and(mask, (disk.astype(np.uint8) * 255))
+
+    if own_center is not None and other_centers:
+        own_rel = (own_center[0] - rx1, own_center[1] - ry1)
+        others_rel = [
+            (ox - rx1, oy - ry1)
+            for ox, oy in other_centers
+            if -bw <= (ox - rx1) <= w + bw and -bh <= (oy - ry1) <= h + bh
+        ]
+        if others_rel:
+            mask = _trim_to_owner(mask, own_rel, others_rel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    best: np.ndarray | None = None
+    best_score = -math.inf
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < max(25.0, roi_area * 0.02) or area / roi_area > 0.92:
+            continue
+        m = cv2.moments(c)
+        if m["m00"] <= 0:
+            continue
+        ccx, ccy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+        dist = math.hypot(ccx - cx_r, ccy - cy_r) / max(rad, 1.0)
+        contains = cv2.pointPolygonTest(c, (float(cx_r), float(cy_r)), False) >= 0
+        score = (area / roi_area) * 3.0 + (1.5 if contains else 0.0) - dist * 2.0
+        if score > best_score:
+            best_score = score
+            best = c
+
+    if best is None:
+        return None
+
+    # Dış hat: convex hull — speküler jagged kenarı boyamada gizler, taş alanını boyar
+    hull = cv2.convexHull(best)
+    # Padded ROI → orijinal ROI (x1,y1) lokaline taşı
+    hull = hull.astype(np.float32)
+    hull[:, 0, 0] += rx1 - x1
+    hull[:, 0, 1] += ry1 - y1
+    return hull.astype(np.int32)
+
+
 def _roi_angle(
     frame: np.ndarray,
     x1: int, y1: int, x2: int, y2: int,
@@ -104,8 +241,12 @@ def _roi_angle(
     own_center: tuple[float, float] | None = None,
     other_centers: list[tuple[float, float]] | None = None,
     voronoi_mask: np.ndarray | None = None,
-) -> float:
+) -> tuple[float, np.ndarray | None]:
     """ROI içindeki taşın açısını Canny kenar tespiti ile hesapla.
+
+    Returns:
+        ``(angle_deg, contour_local)`` — kontür ROI-lokal ``(N,1,2)`` int32
+        veya bulunamazsa ``None``. Label UI / SVG overlay için kullanılır.
 
     Eski yaklaşım (adaptive threshold + Otsu + multi-mask scoring) yansıtıcı
     taşlarda güvenilir kontur üretemiyordu. Canny kenar tespiti parlaklık
@@ -121,12 +262,12 @@ def _roi_angle(
     """
     roi = frame[y1:y2, x1:x2]
     if roi.size == 0:
-        return 0.0
+        return 0.0, None
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
     h, w = gray.shape[:2]
     roi_area = float(h * w)
     if roi_area <= 0:
-        return 0.0
+        return 0.0, None
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
     roi_center = np.array([w / 2.0, h / 2.0])
@@ -237,7 +378,7 @@ def _roi_angle(
             best_contour = contour
 
     if best_contour is None:
-        return 0.0
+        return 0.0, None
 
     # ── Değen taşlar: Voronoi trim ──
     def _filled_mask(contour: np.ndarray) -> np.ndarray:
@@ -339,6 +480,7 @@ def _roi_angle(
         except Exception as _e:
             print(f"[ANGLE_DEBUG] dump failed: {_e}", flush=True)
 
+    contour_out = best_contour.astype(np.int32)
     if use_pca:
-        return pca_angle
-    return rect_angle
+        return pca_angle, contour_out
+    return rect_angle, contour_out

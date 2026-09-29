@@ -39,7 +39,14 @@ _AI_MAX_NEW_TOKENS_CAP = 48
 # presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
 _AI_MAX_NEW_TOKENS_SINGLE = 8
 _AI_DTYPE = "bfloat16"
-_AI_MAX_SEQ_LENGTH = 8192
+# Tek kamera, tek kare. Falcon'un GPU preset'i 15 GB ve üstü sunucular içindir
+# (n_pages=256 → KV ~7 GiB, HR segmentasyon önbelleği 32×512² → ~4 GiB pinned).
+# 512 px kare en fazla ~1100 token; decode tavanı 48. Page 0 rezerve olduğu için
+# 24 sayfa = 23×128 = 2944 token kapasite.
+_AI_PAGE_SIZE = 128
+_AI_MAX_SEQ_LENGTH = 2048
+_AI_N_PAGES = 24
+_AI_MAX_BATCH = 2
 
 _DEFAULT_MAX_STONES = 10
 _model = None
@@ -200,10 +207,7 @@ def _ai_worker_thread():
         import torch
         from falcon_perception import load_and_prepare_model, setup_torch_config
         from falcon_perception.data import ImageProcessor
-        from falcon_perception.paged_inference import (
-            PagedInferenceEngine,
-            engine_config_for_gpu,
-        )
+        from falcon_perception.paged_inference import PagedInferenceEngine
 
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -254,29 +258,27 @@ def _ai_worker_thread():
             )
 
         image_processor = ImageProcessor(patch_size=16, merge_size=1)
-        cfg = engine_config_for_gpu(
-            max_image_size=_AI_IMG_MAX_DIM,
-            device=_device,
-            dtype=_model.dtype,
-        )
-        # max_seq_length page_size ile bölünmeli; server varsayılanı 8192.
-        page_size = int(cfg.get("page_size", 128))
-        max_seq = _AI_MAX_SEQ_LENGTH
-        if max_seq % page_size != 0:
-            max_seq = (max_seq // page_size) * page_size
         print(
-            f"[VLM] PagedInferenceEngine cfg={{{', '.join(f'{k}={v}' for k, v in cfg.items())}}} "
-            f"max_seq_length={max_seq}",
+            f"[VLM] PagedInferenceEngine tek-kamera "
+            f"n_pages={_AI_N_PAGES} page_size={_AI_PAGE_SIZE} "
+            f"max_batch={_AI_MAX_BATCH} max_seq={_AI_MAX_SEQ_LENGTH} "
+            f"hr_cache=off max_image={_AI_IMG_MAX_DIM}",
             flush=True,
         )
         _engine = PagedInferenceEngine(
             _model,
             _tokenizer,
             image_processor,
-            max_seq_length=max_seq,
+            max_batch_size=_AI_MAX_BATCH,
+            max_seq_length=_AI_MAX_SEQ_LENGTH,
+            n_pages=_AI_N_PAGES,
+            page_size=_AI_PAGE_SIZE,
+            prefill_length_limit=_AI_MAX_SEQ_LENGTH,
+            enable_hr_cache=False,
+            max_hr_cache_entries=0,
+            max_image_size=_AI_IMG_MAX_DIM,
             capture_cudagraph=True,
             seed=42,
-            **cfg,
         )
 
         _set_ai_status("warming_up")

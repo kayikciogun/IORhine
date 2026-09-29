@@ -11,7 +11,7 @@ if platform.system() == "Darwin":
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import calibration, camera, job, motion, vision, ws
+from app.api import calibration, camera, dataset_label, job, motion, vision, ws
 from app.config.runtime_store import init_runtime_store
 from app.config.settings import settings
 from app.motion.config_store import apply_motion_config, load_motion_config
@@ -118,6 +118,7 @@ app.include_router(camera.router)
 app.include_router(motion.router)
 app.include_router(calibration.router)
 app.include_router(vision.router)
+app.include_router(dataset_label.router)
 app.include_router(ws.router)
 
 

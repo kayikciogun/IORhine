@@ -45,6 +45,7 @@ import PlacementJobTable from '@/components/production/PlacementJobTable';
 import GlueSheetStatusPanel from '@/components/production/GlueSheetStatus';
 import CalibrationPanel from '@/components/production/CalibrationPanel';
 import VisionTunePanel from '@/components/production/VisionTunePanel';
+import OrientationModelSelector from '@/components/production/OrientationModelSelector';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -64,6 +65,7 @@ import {
   ListOrdered,
   Settings2,
   ScrollText,
+  Gem,
 } from 'lucide-react';
 
 export default function ProductionPage() {
@@ -142,6 +144,11 @@ export default function ProductionPage() {
             area: o.area ?? 0,
             w: o.w,
             h: o.h,
+            bx1: o.bx1,
+            by1: o.by1,
+            bx2: o.bx2,
+            by2: o.by2,
+            contour: o.contour ?? null,
             orientation: o.orientation,
             orientation_confidence: o.orientation_confidence,
           })),
@@ -503,6 +510,17 @@ export default function ProductionPage() {
           )}
           <Button
             size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs"
+            asChild
+          >
+            <Link href="/production/new-stone">
+              <Gem className="w-3 h-3" />
+              Yeni Taş Tanıt
+            </Link>
+          </Button>
+          <Button
+            size="sm"
             variant="ghost"
             className="h-7 w-7 p-0"
             onClick={() => refreshAux()}
@@ -525,7 +543,6 @@ export default function ProductionPage() {
       <div className="flex flex-1 min-h-0">
         {/* SOL: Kamera (büyük) + İş kontrolü (altta) */}
         <main className="flex-1 min-w-0 flex flex-col min-h-0 border-r border-border/60">
-          {/* Son snapshot — canlı stream yok; kamera cihaz seçimiyle bağlı kalır */}
           <div className="relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
             {aiSnapshotResult?.image_base64 ? (
               <img
@@ -556,15 +573,28 @@ export default function ProductionPage() {
             />
           </div>
 
-          {/* Kamera alt araç çubuğu: cihaz seç + kare alma */}
-          <div className="shrink-0 border-t border-border/60 bg-card/50 px-3 py-2 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
+          {/* Kamera alt araç çubuğu: cihaz + orientation model + kare alma */}
+          <div className="shrink-0 border-t border-border/60 bg-card/50 px-3 py-2 flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
               <CameraDeviceSelector
                 disabled={loading}
                 onSelected={(cfg: CameraSourceConfig) => {
                   setCameraReady(true);
                   appendLog(`Kamera bağlandı: ${cfg.kind} / ${cfg.source_id}`);
                 }}
+              />
+              <div className="h-4 w-px bg-border hidden sm:block" />
+              <OrientationModelSelector
+                disabled={loading || !runtimeOnline}
+                onChanged={(m) => {
+                  appendLog(
+                    `Orientation model: ${m.label}` +
+                      (m.best_val_acc != null
+                        ? ` (val ${(m.best_val_acc * 100).toFixed(0)}%)`
+                        : ''),
+                  );
+                }}
+                onError={(msg) => appendLog(`Orientation model: ${msg}`)}
               />
             </div>
 
@@ -633,11 +663,9 @@ export default function ProductionPage() {
             </div>
           </div>
 
-          {/* İş kontrolü — büyük, belirgin, alt panel */}
+          {/* İş kontrolü — alt panel */}
           <div className="shrink-0 border-t border-border/60 bg-card/60 p-3 space-y-3">
-            {/* İlerleme — büyük rakam */}
             <ProgressDisplay phase={phase} index={index} total={total} />
-            {/* Kontrol butonları — tek satır, belirgin */}
             <JobControlPanel
               phase={phase}
               disabled={loading || !runtimeOnline}

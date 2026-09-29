@@ -399,6 +399,11 @@ export interface SnapshotDetectResult {
     h: number;
     area: number;
     score: number;
+    bx1?: number;
+    by1?: number;
+    bx2?: number;
+    by2?: number;
+    contour?: [number, number][] | number[][] | null;
     orientation?: string;
     orientation_confidence?: number;
   }>;
@@ -445,4 +450,203 @@ export async function runSnapshotDetect(
   });
   if (!res.ok) throw await extractError(res, 'runSnapshotDetect');
   return res.json() as Promise<SnapshotDetectResult>;
+}
+
+export const DATASET_TARGET_PER_CLASS = 100;
+
+export interface DatasetStats {
+  stone_id: string;
+  true: number;
+  false: number;
+  target_per_class: number;
+  ready_to_train: boolean;
+}
+
+export interface CreateStoneResult {
+  ok: boolean;
+  stone_id: string;
+  path: string;
+  counts: { true: number; false: number };
+  target_per_class: number;
+}
+
+export async function createDatasetStone(
+  body: { stone_id: string; name?: string; is_symmetric?: boolean },
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<CreateStoneResult> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/dataset/stones`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await extractError(res, 'createDatasetStone');
+  return res.json() as Promise<CreateStoneResult>;
+}
+
+export async function getDatasetStats(
+  stoneId: string,
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<DatasetStats> {
+  const res = await fetch(
+    `${config.restBaseUrl}/api/vision/dataset/stats/${encodeURIComponent(stoneId)}`,
+  );
+  if (!res.ok) throw await extractError(res, 'getDatasetStats');
+  return res.json() as Promise<DatasetStats>;
+}
+
+export interface LabelBatchItem {
+  bx1: number;
+  by1: number;
+  bx2: number;
+  by2: number;
+  label: 'true' | 'false';
+}
+
+export interface LabelBatchResult {
+  ok: boolean;
+  stone_id: string;
+  saved: number;
+  errors: string[];
+  counts: { true: number; false: number };
+  target_per_class: number;
+  ready_to_train: boolean;
+}
+
+export async function submitLabelBatch(
+  body: {
+    stone_id: string;
+    frame_jpeg_base64: string;
+    labels: LabelBatchItem[];
+  },
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<LabelBatchResult> {
+  const res = await fetch(
+    `${config.restBaseUrl}/api/vision/dataset/label-batch`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw await extractError(res, 'submitLabelBatch');
+  return res.json() as Promise<LabelBatchResult>;
+}
+
+export interface DatasetStoneSummary {
+  stone_id: string;
+  name: string;
+  true: number;
+  false: number;
+  is_symmetric: boolean;
+}
+
+export async function listDatasetStones(
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<{ stones: DatasetStoneSummary[]; target_per_class: number }> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/dataset/stones`);
+  if (!res.ok) throw await extractError(res, 'listDatasetStones');
+  return res.json() as Promise<{
+    stones: DatasetStoneSummary[];
+    target_per_class: number;
+  }>;
+}
+
+export async function deleteDatasetStone(
+  stoneId: string,
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<{ ok: boolean; stone_id: string; deleted: boolean }> {
+  const res = await fetch(
+    `${config.restBaseUrl}/api/vision/dataset/stones/${encodeURIComponent(stoneId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw await extractError(res, 'deleteDatasetStone');
+  return res.json() as Promise<{ ok: boolean; stone_id: string; deleted: boolean }>;
+}
+
+export interface TrainStatus {
+  status: 'idle' | 'running' | 'done' | 'error' | string;
+  stone_id: string;
+  epoch: number;
+  epochs: number;
+  train_loss: number;
+  train_acc: number;
+  val_loss: number;
+  val_acc: number;
+  best_val_acc: number;
+  message: string;
+  model_dir: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  history?: Array<{
+    epoch: number;
+    train_loss: number;
+    train_acc: number;
+    val_loss: number;
+    val_acc: number;
+  }>;
+}
+
+export async function startOrientationTrain(
+  body: { stone_id: string; epochs?: number; batch_size?: number; lr?: number },
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<TrainStatus & { ok?: boolean }> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/dataset/train`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await extractError(res, 'startOrientationTrain');
+  return res.json() as Promise<TrainStatus & { ok?: boolean }>;
+}
+
+export async function getOrientationTrainStatus(
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<TrainStatus> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/dataset/train/status`);
+  if (!res.ok) throw await extractError(res, 'getOrientationTrainStatus');
+  return res.json() as Promise<TrainStatus>;
+}
+
+export async function activateOrientationModel(
+  body: { stone_id?: string; model_dir?: string },
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<{ ok: boolean; model_dir: string }> {
+  const res = await fetch(
+    `${config.restBaseUrl}/api/vision/dataset/train/activate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw await extractError(res, 'activateOrientationModel');
+  return res.json() as Promise<{ ok: boolean; model_dir: string }>;
+}
+
+export interface OrientationModelInfo {
+  id: string;
+  label: string;
+  stone_id?: string | null;
+  path: string;
+  img_size?: number;
+  class_names?: string[];
+  best_val_acc?: number | null;
+  counts?: { true?: number; false?: number } | null;
+  finished_at?: string | null;
+  active: boolean;
+}
+
+export interface OrientationModelsResponse {
+  models: OrientationModelInfo[];
+  active_id: string | null;
+  active_dir: string | null;
+}
+
+export async function listOrientationModels(
+  config: RuntimeClientConfig = getDefaultRuntimeClientConfig(),
+): Promise<OrientationModelsResponse> {
+  const res = await fetch(`${config.restBaseUrl}/api/vision/dataset/models`);
+  if (!res.ok) throw await extractError(res, 'listOrientationModels');
+  return res.json() as Promise<OrientationModelsResponse>;
 }

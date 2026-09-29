@@ -39,7 +39,12 @@ from app.vision.contour_geometry import (
     contour_angle_deg,
     normalize_angle,
 )
-from app.vision.roi_segment import _roi_angle, _split_merged_blob, _trim_to_owner
+from app.vision.roi_segment import (
+    _roi_angle,
+    _roi_silhouette,
+    _split_merged_blob,
+    _trim_to_owner,
+)
 import app.vision.vlm_worker as _worker_mod
 from app.vision.vlm_worker import (
     _AI_DTYPE,
@@ -316,7 +321,7 @@ def ai_snapshot_detect(
                 f"[VORONOI] stone {i}: edge-map maskeli (komsu={len(other_centers)})",
                 flush=True,
             )
-        angle = _roi_angle(
+        angle, _angle_contour = _roi_angle(
             frame, bx1, by1, bx2, by2,
             thresh_val=thresh_val,
             block_size=block_size, c_val=c_val,
@@ -326,9 +331,37 @@ def ai_snapshot_detect(
             other_centers=other_centers,
             voronoi_mask=roi_voronoi_mask,
         )
+        # Label overlay: Canny kenarı değil koyu-gövde silüeti (speküler dayanıklı)
+        contour_local = _roi_silhouette(
+            frame, bx1, by1, bx2, by2,
+            own_center=(float(cx), float(cy)),
+            other_centers=other_centers,
+            voronoi_mask=roi_voronoi_mask,
+        )
+        if contour_local is None:
+            contour_local = _angle_contour
         angle_sec = time.perf_counter() - t_a
         angle_total += angle_sec
         print(f"[TIMING] stone {i}: angle={angle_sec:.3f}s", flush=True)
+
+        contour_full: list[list[int]] | None = None
+        if contour_local is not None and len(contour_local) >= 3:
+            try:
+                peri = float(cv2.arcLength(contour_local, True))
+                eps = max(0.8, 0.004 * peri)
+                simplified = cv2.approxPolyDP(
+                    contour_local.astype(np.float32), eps, True
+                )
+                pts = simplified.reshape(-1, 2)
+                if len(pts) > 64:
+                    idx = np.linspace(0, len(pts) - 1, 64).astype(np.int32)
+                    pts = pts[idx]
+                contour_full = [
+                    [int(round(float(x))) + bx1, int(round(float(y))) + by1]
+                    for x, y in pts
+                ]
+            except Exception:
+                contour_full = None
 
         boxes.append((bx1, by1, bx2, by2))
         stones_meta.append({
@@ -342,6 +375,7 @@ def ai_snapshot_detect(
             "box_w": box_w,
             "box_h": box_h,
             "angle": angle,
+            "contour": contour_full,
         })
 
     # Tek session.run — N crop (önceki: taş başına ayrı run ≈ 10× overhead)
@@ -399,6 +433,8 @@ def ai_snapshot_detect(
             "orientation": orientation,
             "orientation_confidence": round(orient_conf, 3),
             "score": round(orient_conf, 3) if orientation != "uncertain" else 1.0,
+            "bx1": bx1, "by1": by1, "bx2": bx2, "by2": by2,
+            "contour": meta.get("contour"),
         })
 
     t_end = time.perf_counter()
