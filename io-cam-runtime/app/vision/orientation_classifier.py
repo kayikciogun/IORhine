@@ -90,10 +90,17 @@ def preload_orientation_model(model_dir: Path | str | None = None) -> bool:
 def _load_orientation_model(model_dir: Path | str | None = None) -> bool:
     """ONNX modelini lazy-load eder. Başarısızsa False — orientation atlanır."""
     global _session, _class_names, _img_size, _model_dir, _load_failed
-    if _session is not None:
+    if _session is not None and model_dir is None:
         return True
     if _load_failed and model_dir is None:
-        return False
+        # Açılışta dosya yoktu; kullanıcı sonra koyduysa bir kez daha dene.
+        pending = _resolve_model_dir(None)
+        if (pending / "orientation_model.onnx").is_file() and (
+            pending / "class_names.json"
+        ).is_file():
+            _load_failed = False
+        else:
+            return False
 
     root = _resolve_model_dir(model_dir)
     model_path = root / "orientation_model.onnx"
@@ -110,7 +117,14 @@ def _load_orientation_model(model_dir: Path | str | None = None) -> bool:
     try:
         # ORT 1.20.x'te preload_dlls yok; PyTorch'u önce import etmek,
         # torch/lib altındaki CUDA 12 + cuDNN 9 DLL'lerini process'e yükler.
-        import torch  # noqa: F401
+        # macOS MLX yolunda torch kurulmaz — ONNX CPU ile devam eder.
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            import platform
+
+            if platform.system() != "Darwin":
+                raise
         import onnxruntime as ort
         try:
             # Windows'ta ORT CUDA EP, PyTorch'un bundled CUDA/cuDNN DLL'lerini

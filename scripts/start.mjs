@@ -58,14 +58,51 @@ function die(msg) {
 }
 
 function findPython() {
-  for (const cmd of IS_WIN ? ["python", "py"] : ["python3", "python"]) {
-    const r = spawnSync(cmd, ["--version"], {
-      encoding: "utf8",
-      shell: IS_WIN,
-    });
+  // torch / MLX tekerlekleri 3.14'ü henüz kapsamıyor.
+  const candidates = IS_WIN
+    ? ["python", "py", "python3.12", "python3.13", "python3.11"]
+    : ["python3.12", "python3.13", "python3.11", "python3", "python"];
+  for (const cmd of candidates) {
+    const r = spawnSync(
+      cmd,
+      [
+        "-c",
+        "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)",
+      ],
+      { encoding: "utf8", shell: IS_WIN },
+    );
     if (r.status === 0) return cmd;
   }
   return null;
+}
+
+function venvPythonPath() {
+  return IS_WIN
+    ? path.join(RUNTIME_DIR, ".venv", "Scripts", "python.exe")
+    : path.join(RUNTIME_DIR, ".venv", "bin", "python");
+}
+
+function ensureVenv(systemPython) {
+  const vp = venvPythonPath();
+  let recreate = !existsSync(vp);
+  if (!recreate) {
+    const r = spawnSync(
+      vp,
+      [
+        "-c",
+        "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)",
+      ],
+      { encoding: "utf8", shell: IS_WIN },
+    );
+    recreate = r.status !== 0;
+  }
+  if (recreate) {
+    runSync(systemPython, ["-m", "venv", path.join(RUNTIME_DIR, ".venv")], {
+      cwd: ROOT,
+    });
+    ok(`venv: ${path.join(RUNTIME_DIR, ".venv")}`);
+  }
+  return vp;
 }
 
 function ensureEnvLocal() {
@@ -165,29 +202,40 @@ function waitHealth(timeoutSec = 45) {
 function verifyRuntimeDeps(python) {
   log("Runtime bağımlılık doğrulama…");
   const script = `
-import sys
+import platform, sys
 errors, warns = [], []
-try:
-    import falcon_perception  # noqa: F401
-    from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
-except Exception as e:
-    errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
-try:
-    import torch
-    if not torch.cuda.is_available():
-        warns.append(f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer")
-except Exception as e:
-    errors.append(f"torch: {e}")
+darwin_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
+if darwin_arm:
+    try:
+        from falcon_perception.mlx.batch_inference import BatchInferenceEngine  # noqa: F401
+    except Exception as e:
+        errors.append(f"falcon-perception MLX / BatchInferenceEngine: {e}")
+else:
+    try:
+        import falcon_perception  # noqa: F401
+        from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
+    except Exception as e:
+        errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            warns.append(f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer")
+    except Exception as e:
+        errors.append(f"torch: {e}")
 try:
     import onnxruntime as ort
-    if ort.__version__ != "1.20.2":
-        errors.append(
-            f"onnxruntime-gpu sürümü {ort.__version__} — beklenen 1.20.2 "
-            "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
-        )
     providers = ort.get_available_providers()
-    if "CUDAExecutionProvider" not in providers:
-        warns.append(f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır")
+    if darwin_arm:
+        if "CPUExecutionProvider" not in providers:
+            errors.append(f"CPUExecutionProvider yok ({providers})")
+    else:
+        if ort.__version__ != "1.20.2":
+            errors.append(
+                f"onnxruntime-gpu sürümü {ort.__version__} — beklenen 1.20.2 "
+                "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
+            )
+        if "CUDAExecutionProvider" not in providers:
+            warns.append(f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır")
 except Exception as e:
     errors.append(f"onnxruntime: {e}")
 for w in warns:
@@ -196,13 +244,20 @@ if errors:
     for e in errors:
         print(f"ERROR: {e}", flush=True)
     sys.exit(1)
-print(
-    "OK: falcon-perception, PagedInferenceEngine, "
-    f"onnxruntime={__import__('onnxruntime').__version__}, "
-    f"torch={__import__('torch').__version__}, "
-    f"cuda={__import__('torch').cuda.is_available()}",
-    flush=True,
-)
+if darwin_arm:
+    print(
+        "OK: falcon-perception MLX BatchInferenceEngine, "
+        f"onnxruntime={__import__('onnxruntime').__version__} (CPU)",
+        flush=True,
+    )
+else:
+    print(
+        "OK: falcon-perception, PagedInferenceEngine, "
+        f"onnxruntime={__import__('onnxruntime').__version__}, "
+        f"torch={__import__('torch').__version__}, "
+        f"cuda={__import__('torch').cuda.is_available()}",
+        flush=True,
+    )
 `;
   const r = spawnSync(python, ["-c", script], {
     encoding: "utf8",
@@ -220,26 +275,31 @@ print(
 function installAll(python) {
   if (SKIP_INSTALL) {
     warn("Kurulum atlandı (--no-install)");
-    return;
+    const vp = venvPythonPath();
+    return existsSync(vp) ? vp : python;
   }
   log("Frontend bağımlılıkları (npm install)…");
   runSync(IS_WIN ? "npm.cmd" : "npm", ["install"], { cwd: ROOT });
+  const venvPy = ensureVenv(python);
   log("Runtime bağımlılıkları (pip install -e .[dev])…");
-  runSync(python, ["-m", "pip", "install", "-U", "pip", "wheel"], {
+  runSync(venvPy, ["-m", "pip", "install", "-U", "pip", "wheel"], {
     cwd: RUNTIME_DIR,
   });
   // Path+[dev] — Windows shell'de ``.[dev]`` köşeli parantez sorununu önler
-  runSync(python, ["-m", "pip", "install", "-e", `${RUNTIME_DIR}[dev]`], {
+  runSync(venvPy, ["-m", "pip", "install", "-e", `${RUNTIME_DIR}[dev]`], {
     cwd: ROOT,
   });
-  // Eski CUDA-13 ORT wheel kalmışsa pin'i zorla
-  runSync(
-    python,
-    ["-m", "pip", "install", "--force-reinstall", "--no-deps", "onnxruntime-gpu==1.20.2"],
-    { cwd: RUNTIME_DIR },
-  );
+  // macOS'ta onnxruntime-gpu wheel yok; CPU onnxruntime pyproject'ten gelir.
+  if (process.platform !== "darwin") {
+    runSync(
+      venvPy,
+      ["-m", "pip", "install", "--force-reinstall", "--no-deps", "onnxruntime-gpu==1.20.2"],
+      { cwd: RUNTIME_DIR },
+    );
+  }
   ok("Bağımlılıklar hazır");
-  verifyRuntimeDeps(python);
+  verifyRuntimeDeps(venvPy);
+  return venvPy;
 }
 
 function cleanup() {
@@ -264,10 +324,10 @@ async function main() {
   log("IO-CAM başlatıcı (Node)");
   ensureEnvLocal();
 
-  const python = findPython();
-  if (!python) die("Python bulunamadı (3.11+ gerekli)");
+  const systemPython = findPython();
+  if (!systemPython) die("Python 3.11–3.13 bulunamadı (3.14 henüz desteklenmiyor)");
 
-  installAll(python);
+  const python = installAll(systemPython);
   if (INSTALL_ONLY) {
     ok("Kurulum tamam (--install)");
     return;

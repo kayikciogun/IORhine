@@ -34,9 +34,9 @@ _AI_MODEL_PATH = "tiiuae/Falcon-Perception"
 # (300M detection-only; seg token yok. Önceki denemede kalite zayıftı — A/B için env bırakıldı.)
 #
 # PyTorch/CUDA + PagedInferenceEngine (paged KV, CUDA graph decode).
-# Tek taş hızı için ilk ``<|seg|>`` stop kullanıyoruz (0.6B).
+# Tek taş: ilk kutu bitince dur (0.6B ``<|seg|>``, 300M ``<|size|>``).
 _AI_MAX_NEW_TOKENS_CAP = 48
-# presence + coord + size + seg (+ eos) ≈ 4–6; marj 8.
+# presence + coord + size (+ seg). MLX stop gelmezse pad bloğuna kadar gider.
 _AI_MAX_NEW_TOKENS_SINGLE = 8
 _AI_DTYPE = "bfloat16"
 # Tek kamera, tek kare. Falcon'un GPU preset'i 15 GB ve üstü sunucular içindir
@@ -54,6 +54,8 @@ _tokenizer = None
 _model_args = None
 _engine = None
 _device = None
+# "paged" = CUDA PagedInferenceEngine, "mlx" = Apple Silicon BatchInferenceEngine
+_engine_kind = "paged"
 
 _ai_status = "uninitialized"  # uninitialized, loading, warming_up, ready, error
 # Worker: (Future | None, pil_image, text_prompt, max_new_tokens, max_stones)
@@ -106,7 +108,13 @@ def _max_new_tokens_for(max_stones: int) -> int:
 
 
 def _stop_token_ids_for(max_stones: int) -> list[int]:
-    """Tek taş: ilk ``<|seg|>`` sonrası dur — kalan taşlar için token üretme."""
+    """Tek taş: ilk kutu tamamlanınca dur.
+
+    MLX döngüsü ``max_new_tokens`` ile kesilmez; stop token ya da pad bloğu
+    (görüntü 594 + blok 128 ≈ 46 adım) bitirir. 0.6B dördüncü token olarak
+    ``<|seg|>`` basar. 300M maske basmaz, ilk kutuyu ``<|size|>`` kapatır.
+    Seg stop'u hiç gelmeyince decode bloğun sonuna kadar sürüyordu.
+    """
     ids: list[int] = []
     if _tokenizer is None:
         return ids
@@ -117,15 +125,26 @@ def _stop_token_ids_for(max_stones: int) -> list[int]:
     if eoq is not None:
         ids.append(int(eoq))
     if max_stones <= 1:
-        seg = getattr(_tokenizer, "seg_token_id", None)
-        if seg is None:
-            try:
-                seg = _tokenizer.convert_tokens_to_ids("<|seg|>")
-            except Exception:
-                seg = None
-        if seg is not None:
-            ids.append(int(seg))
-    return ids
+        for attr, literal in (
+            ("size_token_id", "<|size|>"),
+            ("seg_token_id", "<|seg|>"),
+        ):
+            token_id = getattr(_tokenizer, attr, None)
+            if token_id is None:
+                try:
+                    token_id = _tokenizer.convert_tokens_to_ids(literal)
+                except Exception:
+                    token_id = None
+            if token_id is not None:
+                ids.append(int(token_id))
+    seen: set[int] = set()
+    unique: list[int] = []
+    for token_id in ids:
+        if token_id in seen:
+            continue
+        seen.add(token_id)
+        unique.append(token_id)
+    return unique
 
 
 def _run_paged_generate(
@@ -180,30 +199,175 @@ def _run_paged_generate(
     return tokens, [out_seq.output_aux], input_len, gen_sec, stats
 
 
+def _prefer_mlx() -> bool:
+    """Apple Silicon'da CUDA yok — Falcon MLX batch engine kullanılır."""
+    import platform
+
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return False
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return False
+    except Exception:
+        return True
+    return True
+
+
+def _run_generate(
+    pil_image: Any,
+    text_prompt: str,
+    *,
+    max_new_tokens: int,
+    max_stones: int,
+) -> tuple[Any, list[Any], int, float, Any]:
+    if _engine_kind == "mlx":
+        return _run_mlx_generate(
+            pil_image,
+            text_prompt,
+            max_new_tokens=max_new_tokens,
+            max_stones=max_stones,
+        )
+    return _run_paged_generate(
+        pil_image,
+        text_prompt,
+        max_new_tokens=max_new_tokens,
+        max_stones=max_stones,
+    )
+
+
+def _run_mlx_generate(
+    pil_image: Any,
+    text_prompt: str,
+    *,
+    max_new_tokens: int,
+    max_stones: int,
+) -> tuple[Any, list[Any], int, float, Any]:
+    """MLX BatchInferenceEngine — üretilen token id'leri (prompt hariç)."""
+    from falcon_perception.mlx.batch_inference import process_batch_and_generate
+
+    batch = process_batch_and_generate(
+        _tokenizer,
+        [(pil_image, text_prompt)],
+        _AI_MAX_SEQ_LENGTH,
+        _AI_IMG_MIN_DIM,
+        _AI_IMG_MAX_DIM,
+    )
+    input_len = int(batch["tokens"].shape[1])
+    stop_ids = _stop_token_ids_for(max_stones)
+    t0 = time.perf_counter()
+    out_tokens, aux_outputs = _engine.generate(
+        batch["tokens"],
+        batch["pos_t"],
+        batch["pos_hw"],
+        batch["pixel_values"],
+        batch["pixel_mask"],
+        max_new_tokens=max_new_tokens,
+        temperature=0.0,
+        stop_token_ids=stop_ids or None,
+        task="detection",
+    )
+    gen_sec = time.perf_counter() - t0
+    # Kare bitince Metal tamponlarını geri ver. 16 GB'ta önbellek birikince
+    # sonraki prefill takasa düşüp ~2s oluyor.
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        pass
+    row = np.asarray(out_tokens)[0, input_len:]
+    pad_id = int(getattr(_tokenizer, "pad_token_id", 0) or 0)
+    tokens: list[int] = []
+    for raw in row.tolist():
+        token_id = int(raw)
+        if token_id == pad_id:
+            break
+        tokens.append(token_id)
+        if len(tokens) >= max_new_tokens:
+            break
+    return tokens, list(aux_outputs), input_len, gen_sec, None
+
+
 def _run_compile_warmup() -> None:
-    """torch.compile + CUDA graph maliyetini startup'a çek (Sequence yolu)."""
+    """İlk generate maliyetini startup'a çek (CUDA graph veya MLX derlemesi)."""
     from falcon_perception import build_prompt_for_task
     from PIL import Image
 
+    label = (
+        "MLX BatchInferenceEngine"
+        if _engine_kind == "mlx"
+        else "PagedInferenceEngine"
+    )
     dummy = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
     text_prompt = build_prompt_for_task("stone", "detection")
-    print("[VLM] PagedInferenceEngine warmup basliyor (30-180s surebilir)...", flush=True)
+    print(f"[VLM] {label} warmup basliyor (30-180s surebilir)...", flush=True)
     t0 = time.perf_counter()
-    _run_paged_generate(
+    _run_generate(
         dummy,
         text_prompt,
         max_new_tokens=_AI_MAX_NEW_TOKENS_SINGLE,
         max_stones=1,
     )
     print(
-        f"[VLM] PagedInferenceEngine warmup bitti ({time.perf_counter() - t0:.1f}s)",
+        f"[VLM] {label} warmup bitti ({time.perf_counter() - t0:.1f}s)",
         flush=True,
     )
+
+
+def _load_mlx_engine() -> None:
+    """Apple Silicon: Falcon MLX batch engine (CUDA / torch gerekmez)."""
+    global _model, _tokenizer, _model_args, _engine, _device, _engine_kind
+    from falcon_perception import load_and_prepare_model
+    from falcon_perception.mlx.batch_inference import BatchInferenceEngine
+
+    _engine_kind = "mlx"
+    _set_ai_status("loading")
+    model_id = _resolve_model_id()
+    print(
+        f"[VLM] Falcon-Perception MLX yukleniyor "
+        f"(model={model_id}, dtype=float16, engine=BatchInferenceEngine)...",
+        flush=True,
+    )
+    logger.info("Falcon-Perception MLX yükleniyor (model=%s)", model_id)
+    _model, _tokenizer, _model_args = load_and_prepare_model(
+        hf_model_id=model_id,
+        backend="mlx",
+        dtype="float16",
+        compile=False,
+    )
+    try:
+        import mlx.core as mx
+
+        # Varsayılan limit RAM'in büyük kısmı. M1 Pro 16 GB'ta bu, üretime
+        # girmeden sistemi takasa iter.
+        mx.metal.set_cache_limit(1536 * 1024 * 1024)
+    except Exception:
+        pass
+    _device = "mlx"
+    _engine = BatchInferenceEngine(_model, _tokenizer)
+
+    _set_ai_status("warming_up")
+    try:
+        _run_compile_warmup()
+    except Exception as warm_exc:
+        print(f"[VLM] warmup uyarisi (devam): {warm_exc}", flush=True)
+        logger.warning("VLM MLX warmup failed: %s", warm_exc, exc_info=True)
+
+    _set_ai_status("ready")
+    print("[VLM] READY device=mlx (BatchInferenceEngine)", flush=True)
+    logger.info("Falcon-Perception MLX ready")
 
 
 def _ai_worker_thread():
     global _model, _tokenizer, _model_args, _engine, _device
     try:
+        if _prefer_mlx():
+            _load_mlx_engine()
+            _serve_ai_queue()
+            return
+
         import torch
         from falcon_perception import load_and_prepare_model, setup_torch_config
         from falcon_perception.data import ImageProcessor
@@ -307,6 +471,10 @@ def _ai_worker_thread():
         _set_ai_status("error")
         return
 
+    _serve_ai_queue()
+
+
+def _serve_ai_queue() -> None:
     while True:
         future, pil_image, text_prompt, max_new_tokens, max_stones = _ai_request_queue.get()
         if future is None:
@@ -314,10 +482,10 @@ def _ai_worker_thread():
         try:
             print(
                 f"[VLM] generate basliyor max_new_tokens={max_new_tokens} "
-                f"max_stones={max_stones} task=detection engine=paged",
+                f"max_stones={max_stones} task=detection engine={_engine_kind}",
                 flush=True,
             )
-            tokens, aux_outputs, input_len, gen_sec, stats = _run_paged_generate(
+            tokens, aux_outputs, input_len, gen_sec, stats = _run_generate(
                 pil_image,
                 text_prompt or "",
                 max_new_tokens=max_new_tokens,
@@ -329,7 +497,7 @@ def _ai_worker_thread():
             print(
                 f"[TIMING] VLM generate: {gen_sec:.3f}s "
                 f"input_len={input_len} max_new_tokens={max_new_tokens} "
-                f"max_stones={max_stones} task=detection engine=paged "
+                f"max_stones={max_stones} task=detection engine={_engine_kind} "
                 f"prefill_ms={prefill_ms} decode_ms={decode_ms} finalize_ms={finalize_ms}",
                 flush=True,
             )

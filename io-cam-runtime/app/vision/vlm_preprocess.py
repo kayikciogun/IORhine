@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 # ai_detect._AI_IMG_MAX_DIM / _AI_IMG_MIN_DIM ile senkron tut
-VLM_IMG_MAX_DIM = 512
+VLM_IMG_MAX_DIM = 256
 VLM_IMG_MIN_DIM = 256
 
 
