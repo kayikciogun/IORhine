@@ -306,7 +306,8 @@ async function main() {
       String(RUNTIME_PORT),
     ];
     if (DEV) {
-      uArgs.push("--reload");
+      // Açık kamera WebSocket'leri kapanmayı bekletmesin; yoksa reload takılır.
+      uArgs.push("--reload", "--timeout-graceful-shutdown", "3");
       warn("Dev mode: uvicorn --reload");
     }
 

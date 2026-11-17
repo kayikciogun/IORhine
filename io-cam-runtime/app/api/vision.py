@@ -146,13 +146,11 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
         }
 
     try:
-        from app.vision.ai_detect import ai_snapshot_detect
+        from app.vision.ai_detect import ai_snapshot_detect, seek_face_up_snapshot
 
         # Sync VLM inference event loop'u bloke etmesin (WS / health / UI).
-        objects, out_frame, raw_text = await asyncio.to_thread(
-            ai_snapshot_detect,
-            frame,
-            prompt,
+        # max_stones=1: false taşı kapat, sıradaki tek taşı iste (Kare Al dahil).
+        detect_kwargs = dict(
             thresh_val=body.thresh_val,
             invert_threshold=body.invert_threshold,
             use_pca_angle=body.use_pca_angle,
@@ -160,8 +158,25 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             draw=body.draw,
             block_size=body.block_size,
             c_val=body.c_val,
-            max_stones=max_stones,
         )
+        skipped_false = 0
+        if max_stones <= 1:
+            objects, out_frame, raw_text, skipped_false = await asyncio.to_thread(
+                seek_face_up_snapshot,
+                ai_snapshot_detect,
+                frame,
+                prompt,
+                skip_limit=live.vlm_false_skip_limit,
+                **detect_kwargs,
+            )
+        else:
+            objects, out_frame, raw_text = await asyncio.to_thread(
+                ai_snapshot_detect,
+                frame,
+                prompt,
+                max_stones=max_stones,
+                **detect_kwargs,
+            )
 
         # stdout → .logs/runtime.log (uvicorn logger'a güvenmeden)
         # VLM detayı ai_detect._vlog ile runtime.log'a gidiyor — burada tekrar basma.
@@ -177,6 +192,7 @@ async def run_snapshot_detect(body: SnapshotDetectBody | None = None):
             "vlm_text": raw_text,
             "prompt": prompt,
             "max_stones": max_stones,
+            "skipped_false": skipped_false,
             "image_base64": f"data:image/jpeg;base64,{image_b64}",
             "ai_status": ai_status(),
         }

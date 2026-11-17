@@ -114,7 +114,10 @@ async def ws_camera(websocket: WebSocket):
     try:
         camera = services.ensure_camera()
         try:
-            camera.open()
+            # open() açık cihazı kapatıp yeniden açar; her istemci bağlantısında
+            # kamerayı resetlememek için yalnızca canlı değilse aç.
+            if not camera.is_live:
+                camera.open()
         except Exception as e:
             logger.warning("camera.open failed: %s", e)
             await websocket.send_text(

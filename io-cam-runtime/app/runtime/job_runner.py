@@ -4,13 +4,19 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from app.config.settings import settings
+from app.config.settings import load_settings, settings
 from app.glue_sheet.controller import GlueSheetExhausted
 from app.motion.kinematics import FabricOffset, fabric_to_robot
 from app.runtime.csv_loader import PlacementRow
 from app.runtime.state import JobPhase
 from app.vision.calibration import load_fabric_offset, load_homography
-from app.vision.ai_detect import Stone, detect_all, ai_status as _ai_status_fn
+from app.vision.ai_detect import (
+    Stone,
+    detect_all,
+    exclusion_box,
+    grow_exclusion_box,
+    ai_status as _ai_status_fn,
+)
 
 if TYPE_CHECKING:
     from app.glue_sheet.controller import GlueSheet
@@ -26,6 +32,10 @@ def nearest_stone(stones: list[Stone], head_xy: tuple[float, float]) -> Stone:
     return min(stones, key=lambda s: (s.robot_x - hx) ** 2 + (s.robot_y - hy) ** 2)
 
 
+def is_face_up(stone: Stone, min_true_confidence: float = 0.80) -> bool:
+    return stone.orientation == "true" and float(stone.orientation_confidence) >= min_true_confidence
+
+
 def select_stone_to_pick(
     stones: list[Stone],
     head_xy: tuple[float, float],
@@ -34,18 +44,81 @@ def select_stone_to_pick(
 ) -> Stone | None:
     """Yüz-yukarı (orientation=true) ve emin taşlardan en yakını seç.
 
-    VLM tek seferde birçok taşı bulur; classifier her birine orientation verir.
-    False/uncertain taşları pick etme — aynı frame için VLM'i tekrar çağırma;
-    çağıran bir sonraki kamera karesini bekler.
+    Aynı karede birden fazla taş zaten listelenmişse kullanılır.
+    Pick döngüsü bunun yerine ``seek_pickable_stone`` ile tek tek arar.
     """
-    pickable = [
-        s
-        for s in stones
-        if s.orientation == "true" and float(s.orientation_confidence) >= min_true_confidence
-    ]
+    pickable = [s for s in stones if is_face_up(s, min_true_confidence)]
     if not pickable:
         return None
     return nearest_stone(pickable, head_xy)
+
+
+def rejection_box(stone: Stone, pad: int = 24) -> tuple[int, int, int, int]:
+    """False taşın piksel kutusu — sonraki VLM çağrısında bu bölge kapanır."""
+    del pad
+    return exclusion_box(
+        stone.bx1, stone.by1, stone.bx2, stone.by2,
+        cx=stone.x, cy=stone.y, area=stone.area,
+    )
+
+
+def _already_rejected(
+    stone: Stone,
+    rejected: list[Stone],
+    boxes: list[tuple[int, int, int, int]],
+    tol_px: float = 18.0,
+) -> bool:
+    tol2 = tol_px * tol_px
+    for prev, box in zip(rejected, boxes):
+        if (stone.x - prev.x) ** 2 + (stone.y - prev.y) ** 2 <= tol2:
+            return True
+        x1, y1, x2, y2 = box
+        if x1 <= stone.x <= x2 and y1 <= stone.y <= y2:
+            return True
+    return False
+
+
+def seek_pickable_stone(
+    detect,
+    frame,
+    template,
+    *,
+    cal_dir,
+    skip_limit: int,
+    min_true_confidence: float = 0.80,
+) -> tuple[Stone | None, list[Stone]]:
+    """Her seferinde tek taş iste. False ise kutusunu kapat, sıradakini iste.
+
+    İlk taş true ise tek VLM çağrısı yeter. Hepsi false ise ``skip_limit``
+    kadar dener ve (None, elenenler) döner — çağıran yeni kare bekler.
+    VLM maskeye rağmen aynı taşı tekrar verirse arama durur.
+    """
+    excluded: list[tuple[int, int, int, int]] = []
+    rejected: list[Stone] = []
+    grows = 0
+    for _ in range(max(1, int(skip_limit))):
+        stones = detect(
+            frame,
+            template,
+            cal_dir=cal_dir,
+            max_stones=1,
+            exclude_boxes=excluded or None,
+        )
+        if not stones:
+            return None, rejected
+        stone = stones[0]
+        if _already_rejected(stone, rejected, excluded):
+            if grows < 2 and excluded:
+                excluded[-1] = grow_exclusion_box(excluded[-1])
+                grows += 1
+                continue
+            return None, rejected
+        grows = 0
+        if is_face_up(stone, min_true_confidence):
+            return stone, rejected
+        rejected.append(stone)
+        excluded.append(rejection_box(stone))
+    return None, rejected
 
 
 def shortest_delta_c(target: float, current: float) -> float:
@@ -231,11 +304,18 @@ class JobRunner:
                     if self.ctx.stop_requested:
                         return
                     continue
-                stones = await asyncio.to_thread(
-                    detect_all, frame, self.template, cal_dir=self.cal_dir
+                # Her VLM çağrısı 1 taş (hızlı). False ise o kutu kapanır,
+                # sıradaki tek taş istenir. Limit dolunca bu kare bırakılır.
+                stone, rejected = await asyncio.to_thread(
+                    seek_pickable_stone,
+                    detect_all,
+                    frame,
+                    self.template,
+                    cal_dir=self.cal_dir,
+                    skip_limit=load_settings().vlm_false_skip_limit,
                 )
 
-                if not stones:
+                if stone is None and not rejected:
                     await self.bus.emit("operator_feed_required", {})
                     await asyncio.sleep(settings.settling_ms / 1000.0)
                     empty_retries += 1
@@ -256,18 +336,14 @@ class JobRunner:
                         return
                     continue
 
-                # Tek VLM çağrısıyla bulunan taşlar arasından face-up seç.
-                # False/uncertain varsa aynı sahneyi VLM'le tekrar taramayız —
-                # yeni frame bekleriz (settle + capture sonraki turda).
-                head = self.motion.position()
-                stone = select_stone_to_pick(stones, (head[0], head[1]))
                 if stone is None:
                     await self.bus.emit(
                         "operator_feed_required",
                         {
                             "reason": "no_true_orientation",
-                            "detected": len(stones),
-                            "orientations": [s.orientation for s in stones],
+                            "detected": len(rejected),
+                            "skipped_false": len(rejected),
+                            "orientations": [s.orientation for s in rejected],
                         },
                     )
                     await asyncio.sleep(settings.settling_ms / 1000.0)
@@ -276,7 +352,7 @@ class JobRunner:
                         self.ctx.state.phase = JobPhase.ERROR
                         self.ctx.state.message = (
                             f"no_true_orientation_stone after {empty_retries} frames "
-                            f"at row {i} (detected={len(stones)})"
+                            f"at row {i} (skipped_false={len(rejected)})"
                         )
                         await self.bus.emit(
                             "error",

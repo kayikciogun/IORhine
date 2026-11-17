@@ -270,6 +270,128 @@ def _tmp_cal_dir():
     p = Path(tempfile.mkdtemp(prefix="iorhine_test_cal_"))
     return p
 
+def test_seek_skips_false_then_picks_next_true():
+    from app.runtime.job_runner import seek_pickable_stone
+    from app.vision.ai_detect import Stone
+
+    false_stone = Stone(
+        x=20, y=20, angle=0, score=0.9, area=400,
+        robot_x=20, robot_y=20,
+        orientation="false", orientation_confidence=0.99,
+        bx1=0, by1=0, bx2=40, by2=40,
+    )
+    true_stone = Stone(
+        x=120, y=80, angle=0, score=0.9, area=400,
+        robot_x=120, robot_y=80,
+        orientation="true", orientation_confidence=0.91,
+        bx1=100, by1=60, bx2=140, by2=100,
+    )
+    calls: list = []
+
+    def detect(frame, template, *, cal_dir, max_stones, exclude_boxes=None):
+        calls.append({"max_stones": max_stones, "exclude_boxes": exclude_boxes})
+        if not exclude_boxes:
+            return [false_stone]
+        return [true_stone]
+
+    picked, rejected = seek_pickable_stone(
+        detect, None, None, cal_dir=None, skip_limit=4,
+    )
+    assert picked is true_stone
+    assert rejected == [false_stone]
+    assert calls[0]["max_stones"] == 1
+    assert calls[0]["exclude_boxes"] is None
+    assert calls[1]["exclude_boxes"] is not None
+
+
+def test_seek_stops_when_same_false_stone_repeats():
+    from app.runtime.job_runner import seek_pickable_stone
+    from app.vision.ai_detect import Stone
+
+    stone = Stone(
+        x=20, y=20, angle=0, score=0.9, area=400,
+        robot_x=20, robot_y=20,
+        orientation="false", orientation_confidence=0.99,
+        bx1=0, by1=0, bx2=40, by2=40,
+    )
+    calls = {"n": 0}
+
+    def detect(frame, template, *, cal_dir, max_stones, exclude_boxes=None):
+        calls["n"] += 1
+        return [stone]
+
+    picked, rejected = seek_pickable_stone(
+        detect, None, None, cal_dir=None, skip_limit=6,
+    )
+    assert picked is None
+    assert rejected == [stone]
+    # 1 tespit + 2 maske büyütme + tekrar aynı taşta dur
+    assert calls["n"] == 4
+
+
+def test_seek_limit_when_every_candidate_is_false():
+    from app.runtime.job_runner import seek_pickable_stone
+    from app.vision.ai_detect import Stone
+
+    def detect(frame, template, *, cal_dir, max_stones, exclude_boxes=None):
+        k = 0 if not exclude_boxes else len(exclude_boxes) * 100
+        return [Stone(
+            x=k + 20, y=20, angle=0, score=0.9, area=400,
+            robot_x=float(k), robot_y=20,
+            orientation="false", orientation_confidence=0.99,
+            bx1=k, by1=0, bx2=k + 40, by2=40,
+        )]
+
+    picked, rejected = seek_pickable_stone(
+        detect, None, None, cal_dir=None, skip_limit=3,
+    )
+    assert picked is None
+    assert len(rejected) == 3
+
+
+def test_seek_face_up_snapshot_skips_false_box():
+    from app.vision.ai_detect import seek_face_up_snapshot
+
+    false_obj = {
+        "cx": 20, "cy": 20, "x": 20, "y": 20,
+        "bx1": 0, "by1": 0, "bx2": 40, "by2": 40,
+        "orientation": "false", "orientation_confidence": 0.97, "area": 400,
+    }
+    true_obj = {
+        "cx": 140, "cy": 80, "x": 140, "y": 80,
+        "bx1": 120, "by1": 60, "bx2": 160, "by2": 100,
+        "orientation": "true", "orientation_confidence": 0.93, "area": 400,
+    }
+    frame = np.full((80, 200, 3), 230, dtype=np.uint8)
+    seen: list = []
+
+    def detect(image, prompt, *, max_stones, exclude_boxes=None, draw=True):
+        seen.append(exclude_boxes)
+        if not exclude_boxes:
+            return [false_obj], image.copy(), "false"
+        return [true_obj], image.copy(), "true"
+
+    objects, _vis, text, skipped = seek_face_up_snapshot(
+        detect, frame, "gemstone", skip_limit=4, draw=True,
+    )
+    assert objects == [true_obj]
+    assert skipped == 1
+    assert text == "true"
+    assert seen[0] is None
+    assert seen[1] is not None
+
+
+def test_mask_excluded_boxes_covers_false_stone_only():
+    from app.vision.ai_detect import mask_excluded_boxes
+
+    frame = np.full((80, 100, 3), 240, dtype=np.uint8)
+    frame[10:30, 10:30] = (0, 0, 0)
+    masked = mask_excluded_boxes(frame, [(10, 10, 30, 30)])
+    assert int(masked[20, 20, 0]) > 200
+    assert int(frame[20, 20, 0]) == 0
+    assert int(masked[50, 50, 0]) == 240
+
+
 def test_select_stone_to_pick_prefers_true_near_head():
     from app.runtime.job_runner import select_stone_to_pick
     from app.vision.ai_detect import Stone

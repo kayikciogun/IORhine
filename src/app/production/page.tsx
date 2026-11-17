@@ -46,6 +46,7 @@ import GlueSheetStatusPanel from '@/components/production/GlueSheetStatus';
 import CalibrationPanel from '@/components/production/CalibrationPanel';
 import VisionTunePanel from '@/components/production/VisionTunePanel';
 import OrientationModelSelector from '@/components/production/OrientationModelSelector';
+import LiveCameraView from '@/components/production/LiveCameraView';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -61,7 +62,6 @@ import {
   Upload,
   RefreshCw,
   Factory,
-  Camera,
   ListOrdered,
   Settings2,
   ScrollText,
@@ -473,6 +473,8 @@ export default function ProductionPage() {
     return 'secondary';
   }, [phase]);
 
+  const falconBusy = aiStatus != null && aiStatus !== 'ready';
+
   const [settingsTab, setSettingsTab] = useState('vision');
 
   return (
@@ -548,16 +550,14 @@ export default function ProductionPage() {
               <img
                 src={aiSnapshotResult.image_base64}
                 alt="Son AI snapshot"
-                className="w-full h-full object-contain"
+                className="absolute inset-0 h-full w-full object-contain"
               />
             ) : (
-              <div className="flex flex-col items-center justify-center text-muted-foreground px-6 text-center gap-2">
-                <Camera className="w-8 h-8 opacity-50" />
-                <p className="text-xs">Canlı önizleme kapalı</p>
-                <p className="text-[11px] text-muted-foreground/80 max-w-sm">
-                  Kamera bağlı kalsın; &quot;Kare Al&quot; ile son frame ve taş tespiti burada görünür.
-                </p>
-              </div>
+              <LiveCameraView
+                enabled={runtimeOnline !== false}
+                fill
+                className="absolute inset-0 h-full w-full"
+              />
             )}
             <SnapshotHud
               phase={phase}
@@ -606,11 +606,7 @@ export default function ProductionPage() {
                 <Switch
                   checked={serialDetect}
                   onCheckedChange={handleSerialToggle}
-                  disabled={
-                    loading ||
-                    !runtimeOnline ||
-                    (aiStatus != null && aiStatus !== 'ready')
-                  }
+                  disabled={loading || !runtimeOnline || falconBusy}
                   className="h-5 w-9 data-[state=checked]:bg-purple-600 [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                 />
                 <span className={serialDetect ? 'text-purple-300 font-medium' : ''}>
@@ -629,22 +625,17 @@ export default function ProductionPage() {
                 type="button"
                 variant="default"
                 size="sm"
-                disabled={
-                  aiLoading ||
-                  serialDetect ||
-                  !runtimeOnline ||
-                  (aiStatus != null && aiStatus !== 'ready')
-                }
+                disabled={aiLoading || serialDetect || !runtimeOnline || falconBusy}
                 onClick={handleRunAiSnapshot}
                 className="h-7 px-3 text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold shadow-md shadow-purple-900/30 flex items-center gap-1.5"
                 title={
                   serialDetect
                     ? 'Seri mod açık — tek kare için kapatın'
-                    : aiStatus === 'warming_up'
+                    : falconBusy && aiStatus === 'warming_up'
                       ? 'AI modeli derleniyor — hazır olunca deneyin'
-                      : aiStatus === 'loading'
+                      : falconBusy && aiStatus === 'loading'
                         ? 'AI modeli yükleniyor…'
-                        : aiStatus === 'error'
+                        : falconBusy && aiStatus === 'error'
                           ? 'AI model hatası — runtime logunu kontrol edin'
                           : 'Tek kare AI tespiti'
                 }
@@ -654,9 +645,9 @@ export default function ProductionPage() {
                   ? 'Seri…'
                   : aiLoading
                     ? 'Analiz…'
-                    : aiStatus === 'warming_up'
+                    : falconBusy && aiStatus === 'warming_up'
                       ? 'Derleniyor…'
-                      : aiStatus === 'loading'
+                      : falconBusy && aiStatus === 'loading'
                         ? 'Yükleniyor…'
                         : 'Kare Al'}
               </Button>

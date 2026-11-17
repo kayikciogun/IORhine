@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     vlm_prompt: str = "single black rhinestone"
     # Tek VLM çağrısında tarama limiti — saçaktaki true taşlardan biri seçilir.
     vlm_max_stones: int = Field(default=10, ge=1, le=100)
+    # Pick: her VLM çağrısı 1 taş (hızlı). False ise o kutu maskelenir ve
+    # sıradaki tek taş aranır. Bu kadar false taştan sonra yeni kareye geçilir.
+    vlm_false_skip_limit: int = Field(default=6, ge=1, le=30)
     # HuggingFace model id — 0.6B: tiiuae/Falcon-Perception, 0.3B: tiiuae/Falcon-Perception-300M
     vlm_model: str = "tiiuae/Falcon-Perception"
 

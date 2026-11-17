@@ -6,9 +6,8 @@ Pipeline:
     2. Her bbox ROI → adaptive threshold → PCA/minAreaRect → açı
     3. VLM bbox crop → ONNX ConvNeXt → orientation (true/false)
 
-Hız: varsayılan ``max_stones=10`` (job: sahnedeki taşları tek seferde bul,
-içlerinden face-up olanı seç). Tek taş için ``max_stones=1`` yeter.
-Çoklu tespit için ``max_stones`` yükselt.
+Hız: pick yolu ``max_stones=1`` kullanır. Seçilen taş false ise job o kutuyu
+maskeleyip aynı karede sıradaki tek taşı ister. Çoklu tespit için ``max_stones`` yükselt.
 
 Thread-safety: inference tek bir worker thread tarafından sırada işlenir.
 Çağıranlar (ws.py / vision.py / job_runner) `concurrent.futures.Future` üzerinden
@@ -77,6 +76,183 @@ COL_ORIENT_TRUE = (0, 220, 0)  # BGR yeşil — true orientation
 logger = logging.getLogger("io_cam.ai_detect")
 
 
+def mask_excluded_boxes(
+    frame: np.ndarray,
+    boxes: list[tuple[int, int, int, int]],
+) -> np.ndarray:
+    """False taş kutularını VLM girdisinden sil.
+
+    Dolgu, köşe medyanı (zemin). Zemin de koyuysa açık gri — siyah rhinestone
+    prompt'u maskeyi yeni taş sanmasın. Açı ve orientation hâlâ orijinal kareyi görür.
+    """
+    if not boxes:
+        return frame
+    out = frame.copy()
+    h, w = out.shape[:2]
+    channels = out.shape[2] if out.ndim == 3 else 1
+    m = max(4, min(h, w) // 20)
+    if out.ndim == 2:
+        corners = np.concatenate([
+            out[:m, :m].reshape(-1),
+            out[:m, w - m :].reshape(-1),
+            out[h - m :, :m].reshape(-1),
+            out[h - m :, w - m :].reshape(-1),
+        ])
+        fill_val = np.median(corners)
+        if float(fill_val) < 48:
+            fill_val = 210
+        fill = fill_val
+    else:
+        corners = np.concatenate([
+            out[:m, :m].reshape(-1, channels),
+            out[:m, w - m :].reshape(-1, channels),
+            out[h - m :, :m].reshape(-1, channels),
+            out[h - m :, w - m :].reshape(-1, channels),
+        ], axis=0)
+        fill = np.median(corners, axis=0)
+        if float(fill.mean()) < 48:
+            fill = np.full(channels, 210, dtype=out.dtype)
+        else:
+            fill = fill.astype(out.dtype)
+    for bx1, by1, bx2, by2 in boxes:
+        x1 = max(0, int(bx1))
+        y1 = max(0, int(by1))
+        x2 = min(w, int(bx2))
+        y2 = min(h, int(by2))
+        if x2 > x1 and y2 > y1:
+            out[y1:y2, x1:x2] = fill
+    return out
+
+
+def exclusion_box(
+    bx1: int,
+    by1: int,
+    bx2: int,
+    by2: int,
+    *,
+    cx: float,
+    cy: float,
+    area: float,
+    pad_ratio: float = 0.2,
+) -> tuple[int, int, int, int]:
+    """False taşın sonraki VLM çağrısında kapanacak piksel kutusu.
+
+    Geçerli bbox biraz genişletilir. Kutu yoksa merkez ve alandan kare üretilir.
+    """
+    x1, y1, x2, y2 = int(bx1), int(by1), int(bx2), int(by2)
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        side = max(12, int(round(math.sqrt(max(float(area), 1.0)))))
+        half = side / 2.0
+        x1 = int(round(float(cx) - half))
+        y1 = int(round(float(cy) - half))
+        x2 = int(round(float(cx) + half))
+        y2 = int(round(float(cy) + half))
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+    pad_x = max(8, int(round(w * pad_ratio)))
+    pad_y = max(8, int(round(h * pad_ratio)))
+    return (x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y)
+
+
+def grow_exclusion_box(
+    box: tuple[int, int, int, int],
+    *,
+    grow: float = 0.5,
+) -> tuple[int, int, int, int]:
+    """Maskeye rağmen aynı taş dönünce kutuyu merkezden büyüt."""
+    x1, y1, x2, y2 = (int(v) for v in box)
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+    gx = max(4, int(round(w * grow / 2)))
+    gy = max(4, int(round(h * grow / 2)))
+    return (x1 - gx, y1 - gy, x2 + gx, y2 + gy)
+
+
+def _obj_center(obj: dict[str, Any]) -> tuple[float, float]:
+    if "cx" in obj or "cy" in obj:
+        return float(obj.get("cx", 0.0)), float(obj.get("cy", 0.0))
+    return float(obj.get("x", 0.0)), float(obj.get("y", 0.0))
+
+
+def _obj_is_face_up(obj: dict[str, Any], min_true_confidence: float) -> bool:
+    return (
+        str(obj.get("orientation", "")) == "true"
+        and float(obj.get("orientation_confidence", 0.0)) >= min_true_confidence
+    )
+
+
+def _obj_already_masked(
+    obj: dict[str, Any],
+    rejected: list[dict[str, Any]],
+    boxes: list[tuple[int, int, int, int]],
+    tol_px: float = 18.0,
+) -> bool:
+    cx, cy = _obj_center(obj)
+    tol2 = tol_px * tol_px
+    for prev, box in zip(rejected, boxes):
+        px, py = _obj_center(prev)
+        if (cx - px) ** 2 + (cy - py) ** 2 <= tol2:
+            return True
+        x1, y1, x2, y2 = box
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            return True
+    return False
+
+
+def seek_face_up_snapshot(
+    detect,
+    frame: np.ndarray,
+    prompt: str = "stone",
+    *,
+    skip_limit: int = 6,
+    min_true_confidence: float = 0.80,
+    **detect_kwargs: Any,
+) -> tuple[list[dict[str, Any]], np.ndarray, str, int]:
+    """Her seferinde tek taş iste. False ise kutusunu kapat, sıradakini iste.
+
+    Dönüş: (nesneler, görüntü, vlm metni, atlanan false sayısı).
+    Yüz-yukarı taş yoksa nesne listesi boş kalır.
+    """
+    excluded: list[tuple[int, int, int, int]] = []
+    rejected: list[dict[str, Any]] = []
+    grows = 0
+    last_vis = frame
+    last_text = ""
+    for _ in range(max(1, int(skip_limit))):
+        objects, vis, text = detect(
+            frame,
+            prompt,
+            max_stones=1,
+            exclude_boxes=excluded or None,
+            **detect_kwargs,
+        )
+        last_vis, last_text = vis, text
+        if not objects:
+            return [], vis, text, len(rejected)
+        obj = objects[0]
+        if _obj_already_masked(obj, rejected, excluded):
+            if grows < 2 and excluded:
+                excluded[-1] = grow_exclusion_box(excluded[-1])
+                grows += 1
+                continue
+            return [], vis, text, len(rejected)
+        grows = 0
+        if _obj_is_face_up(obj, min_true_confidence):
+            return list(objects), vis, text, len(rejected)
+        rejected.append(obj)
+        cx, cy = _obj_center(obj)
+        excluded.append(exclusion_box(
+            int(obj.get("bx1", 0)),
+            int(obj.get("by1", 0)),
+            int(obj.get("bx2", 0)),
+            int(obj.get("by2", 0)),
+            cx=cx,
+            cy=cy,
+            area=float(obj.get("area", 0.0)),
+        ))
+    return [], last_vis, last_text, len(rejected)
+
+
 def __getattr__(name: str) -> Any:
     """Delegate dynamic/mutable module-level variables to vlm_worker."""
     if name in (
@@ -109,6 +285,7 @@ def ai_snapshot_detect(
     skip_if_busy: bool = False,
     busy_timeout_s: float = 60.0,
     max_stones: int = _DEFAULT_MAX_STONES,
+    exclude_boxes: list[tuple[int, int, int, int]] | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray, str]:
     t0 = time.perf_counter()
     out = frame.copy() if draw else frame
@@ -128,8 +305,10 @@ def ai_snapshot_detect(
     from falcon_perception import build_prompt_for_task
 
     # Ön küçültme: PagedInferenceEngine Sequence tokenizasyonu öncesi cv2 ile küçült.
+    # Maske yalnızca VLM girdisinde. Açı / orientation orijinal ``frame`` üzerinde kalır.
     t_pre0 = time.perf_counter()
-    small, _, _, _ = resize_for_vlm(frame, max_dim=_AI_IMG_MAX_DIM)
+    vlm_frame = mask_excluded_boxes(frame, exclude_boxes) if exclude_boxes else frame
+    small, _, _, _ = resize_for_vlm(vlm_frame, max_dim=_AI_IMG_MAX_DIM)
     pil_image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
 
     subject = (prompt or "").strip() or "stone"
@@ -465,6 +644,10 @@ class Stone:
     robot_y: float = 0.0
     orientation: str = "uncertain"  # true | false | uncertain
     orientation_confidence: float = 0.0
+    bx1: int = 0
+    by1: int = 0
+    bx2: int = 0
+    by2: int = 0
 
 
 def detect_all(
@@ -474,6 +657,7 @@ def detect_all(
     homography: np.ndarray | None = None,
     cal_dir=None,
     max_stones: int | None = None,
+    exclude_boxes: list[tuple[int, int, int, int]] | None = None,
 ) -> list[Stone]:
     from app.config.settings import load_settings
     from app.vision.calibration import load_homography, pixel_to_robot
@@ -489,6 +673,7 @@ def detect_all(
         draw=False,
         is_symmetric=is_symmetric,
         max_stones=stones_limit,
+        exclude_boxes=exclude_boxes,
     )
 
     stones = []
@@ -506,5 +691,9 @@ def detect_all(
             robot_y=ry,
             orientation=str(obj.get("orientation", "uncertain")),
             orientation_confidence=float(obj.get("orientation_confidence", 0.0)),
+            bx1=int(obj.get("bx1", 0)),
+            by1=int(obj.get("by1", 0)),
+            bx2=int(obj.get("bx2", 0)),
+            by2=int(obj.get("by2", 0)),
         ))
     return stones

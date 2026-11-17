@@ -14,6 +14,8 @@ interface Props {
   className?: string;
   /** Production yan düzeni: küçük önizleme (geniş ana sütunda dev kalmaz). */
   compact?: boolean;
+  /** Ana panel: kalan yüksekliği doldurur. */
+  fill?: boolean;
   /** Değişince WebSocket yeniden bağlanır (kamera değişimi). */
   streamKey?: string;
   onFrame?: (stones: DetectedStone[], fps: number | null) => void;
@@ -24,18 +26,23 @@ export default function LiveCameraView({
   enabled,
   className = '',
   compact = false,
+  fill = false,
   streamKey = 'default',
   onFrame,
   onCameraError,
 }: Props) {
   const compactShell =
     'inline-block w-fit max-w-[min(280px,92vw)]';
-  const frameClass = compact
-    ? 'block h-auto max-h-[min(200px,24vh)] w-auto max-w-[280px] object-contain'
-    : 'w-full aspect-[16/10] object-contain';
-  const placeholderClass = compact
-    ? 'flex min-h-[140px] w-[260px] max-w-full max-h-[min(200px,24vh)] items-center justify-center'
-    : 'flex aspect-[16/10] w-full items-center justify-center';
+  const frameClass = fill
+    ? 'h-full w-full object-contain'
+    : compact
+      ? 'block h-auto max-h-[min(200px,24vh)] w-auto max-w-[280px] object-contain'
+      : 'w-full aspect-[16/10] object-contain';
+  const placeholderClass = fill
+    ? 'flex h-full w-full items-center justify-center'
+    : compact
+      ? 'flex min-h-[140px] w-[260px] max-w-full max-h-[min(200px,24vh)] items-center justify-center'
+      : 'flex aspect-[16/10] w-full items-center justify-center';
   const [src, setSrc] = useState<string | null>(null);
   const [stones, setStones] = useState<DetectedStone[]>([]);
   const [connected, setConnected] = useState(false);
@@ -145,9 +152,10 @@ export default function LiveCameraView({
   return (
     <div
       className={`relative overflow-hidden border border-border bg-black/90 ${
-        compact ? compactShell : ''
+        fill ? 'h-full w-full border-0' : compact ? compactShell : ''
       } ${className}`}
     >
+      {!fill && (
       <div className="absolute top-1.5 left-1.5 right-1.5 z-10 flex flex-wrap items-center gap-1.5">
         <Badge variant={connected ? 'default' : 'secondary'} className="gap-1 text-[9px] h-5 px-1.5">
           {connected ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
@@ -162,6 +170,7 @@ export default function LiveCameraView({
           {stones.length} nesne
         </Badge>
       </div>
+      )}
 
       {camError && (
         <div className="absolute bottom-1.5 left-1.5 right-1.5 z-10 text-[9px] text-amber-200 bg-black/70 rounded px-1.5 py-0.5">

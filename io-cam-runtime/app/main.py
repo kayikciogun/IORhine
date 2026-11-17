@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import platform
+import threading
+import time
 from contextlib import asynccontextmanager
 
 if platform.system() == "Darwin":
@@ -100,6 +102,13 @@ async def lifespan(_app: FastAPI):
             services.camera.close()
         except Exception:
             pass
+    # Falcon'un daemon olmayan CUDA iş parçacıkları süreç çıkışını sonsuza dek bekletir;
+    # uvicorn --reload eski süreci join ettiği için yeniden yükleme takılı kalır.
+    def _force_exit() -> None:
+        time.sleep(4.0)
+        os._exit(0)
+
+    threading.Thread(target=_force_exit, daemon=True, name="force-exit").start()
 
 
 app = FastAPI(title="IO-CAM Runtime", version="0.1.0", lifespan=lifespan)

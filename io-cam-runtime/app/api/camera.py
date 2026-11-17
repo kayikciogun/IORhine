@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 import time
 from typing import Any, Literal
 
@@ -59,8 +60,31 @@ async def get_devices():
     if _DEVICES_CACHE and now - _DEVICES_CACHE[0] < _DEVICES_TTL:
         return _DEVICES_CACHE[1]
     result = await asyncio.to_thread(list_all_devices)
+    _include_active_device(result)
     _DEVICES_CACHE = (now, result)
     return result
+
+
+def _include_active_device(result: dict[str, list[dict[str, Any]]]) -> None:
+    """Runtime'ın açık tuttuğu kamera probe'da okunamayabilir (DSHOW tek tüketici); listede kalsın."""
+    cam = services.camera
+    cfg = cam.config if cam and cam.config else load_saved_config(settings.calibration_dir)
+    if cfg is None or cfg.kind != "usb":
+        return
+    usb = result.setdefault("usb", [])
+    dev_id = f"usb:{cfg.source_id}"
+    if any(d.get("id") == dev_id for d in usb):
+        return
+    label = f"Kamera {cfg.source_id}"
+    if platform.system() == "Windows" and cfg.source_id.isdigit():
+        from app.runtime.camera_sources import _windows_dshow_device_names
+
+        names = _windows_dshow_device_names()
+        idx = int(cfg.source_id)
+        if 0 <= idx < len(names) and names[idx]:
+            label = names[idx]
+    usb.append({"id": dev_id, "label": label, "kind": "usb", "available": True, "meta": {"index": cfg.source_id, "active": True}})
+    usb.sort(key=lambda d: (str(d.get("meta", {}).get("index", "")).zfill(4), d.get("id", "")))
 
 
 @router.get("/status")
