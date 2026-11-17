@@ -117,10 +117,29 @@ sys.exit(0 if a >= b else 1)
 PY
 }
 
+# torch / MLX tekerlekleri 3.14'ü henüz kapsamıyor; Homebrew'da python3 çoğu zaman 3.14.
+PYTHON_BIN=""
+
+pick_python() {
+  local cand ver
+  for cand in python3.12 python3.13 python3.11 python3 python; do
+    if ! command -v "$cand" >/dev/null 2>&1; then
+      continue
+    fi
+    ver="$("$cand" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+    if version_ge "$ver" "3.11.0" && ! version_ge "$ver" "3.14.0"; then
+      PYTHON_BIN="$(command -v "$cand")"
+      ok "Node $(node -v), Python $ver ($PYTHON_BIN)"
+      return 0
+    fi
+  done
+  err "Python 3.11–3.13 gerekli (torch/MLX). Örnek: brew install python@3.12"
+  exit 1
+}
+
 check_prerequisites() {
   need_cmd node
   need_cmd npm
-  need_cmd python3
   need_cmd curl
 
   local node_major
@@ -129,14 +148,7 @@ check_prerequisites() {
     err "Node.js 20+ gerekli (mevcut: $(node -v))"
     exit 1
   fi
-
-  local pyver
-  pyver="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
-  if ! version_ge "$pyver" "3.11.0"; then
-    err "Python 3.11+ gerekli (mevcut: $pyver)"
-    exit 1
-  fi
-  ok "Node $(node -v), Python $pyver"
+  pick_python
 }
 
 ensure_env_local() {
@@ -180,17 +192,33 @@ install_frontend() {
 
 install_runtime() {
   log "Runtime bağımlılıkları (Python venv)…"
-  if [[ ! -d "$VENV_DIR" ]]; then
-    python3 -m venv "$VENV_DIR"
-    ok "venv oluşturuldu: $VENV_DIR"
+  local venv_py="$VENV_DIR/bin/python"
+  local recreate=0
+  if [[ ! -x "$venv_py" ]]; then
+    recreate=1
+  else
+    local venv_ver
+    venv_ver="$("$venv_py" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+    if ! version_ge "$venv_ver" "3.11.0" || version_ge "$venv_ver" "3.14.0"; then
+      warn "Mevcut venv Python $venv_ver — 3.11–3.13 ile yeniden oluşturuluyor"
+      recreate=1
+    fi
+  fi
+  if [[ "$recreate" -eq 1 ]]; then
+    rm -rf "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    ok "venv oluşturuldu: $VENV_DIR ($PYTHON_BIN)"
   fi
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
   python -m pip install -U pip wheel -q
-  # Editable install — pyproject pin'leri (onnxruntime-gpu==1.20.2, falcon-perception[torch])
+  # Editable install — pyproject platform marker'ları (CUDA torch ya da MLX)
   pip install -e "${RUNTIME_DIR}[dev]" -q
-  # Eski CUDA-13 ORT wheel kalmışsa pin'i zorla (1.27+ CPU'ya düşer / cuDNN 13 ister)
-  pip install --force-reinstall --no-deps "onnxruntime-gpu==1.20.2" -q
+  # macOS'ta onnxruntime-gpu wheel yok; CPU onnxruntime pyproject'ten gelir.
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    # Eski CUDA-13 ORT wheel kalmışsa pin'i zorla (1.27+ CPU'ya düşer / cuDNN 13 ister)
+    pip install --force-reinstall --no-deps "onnxruntime-gpu==1.20.2" -q
+  fi
   ok "pip install -e io-cam-runtime[dev] tamam"
   verify_runtime_deps
 }
@@ -205,34 +233,48 @@ import sys
 errors: list[str] = []
 warns: list[str] = []
 
-try:
-    import falcon_perception  # noqa: F401
-    from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
-except Exception as e:
-    errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
+import platform
 
-try:
-    import torch
-    if not torch.cuda.is_available():
-        warns.append(
-            f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer"
-        )
-except Exception as e:
-    errors.append(f"torch: {e}")
+darwin_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
+
+if darwin_arm:
+    try:
+        from falcon_perception.mlx.batch_inference import BatchInferenceEngine  # noqa: F401
+    except Exception as e:
+        errors.append(f"falcon-perception MLX / BatchInferenceEngine: {e}")
+else:
+    try:
+        import falcon_perception  # noqa: F401
+        from falcon_perception.paged_inference import PagedInferenceEngine  # noqa: F401
+    except Exception as e:
+        errors.append(f"falcon-perception / PagedInferenceEngine: {e}")
+
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            warns.append(
+                f"torch CUDA yok (torch={torch.__version__}) — VLM worker error'a düşer"
+            )
+    except Exception as e:
+        errors.append(f"torch: {e}")
 
 try:
     import onnxruntime as ort
     ver = ort.__version__
-    if ver != "1.20.2":
-        errors.append(
-            f"onnxruntime-gpu sürümü {ver} — beklenen 1.20.2 "
-            "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
-        )
     providers = ort.get_available_providers()
-    if "CUDAExecutionProvider" not in providers:
-        warns.append(
-            f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır (~10x yavaş)"
-        )
+    if darwin_arm:
+        if "CPUExecutionProvider" not in providers:
+            errors.append(f"CPUExecutionProvider yok ({providers})")
+    else:
+        if ver != "1.20.2":
+            errors.append(
+                f"onnxruntime-gpu sürümü {ver} — beklenen 1.20.2 "
+                "(1.27+ CUDA 13 ister; PyTorch CUDA 12 ile uyumsuz)"
+            )
+        if "CUDAExecutionProvider" not in providers:
+            warns.append(
+                f"CUDAExecutionProvider yok ({providers}) — orientation CPU'da kalır (~10x yavaş)"
+            )
 except Exception as e:
     errors.append(f"onnxruntime: {e}")
 
@@ -242,13 +284,20 @@ if errors:
     for e in errors:
         print(f"ERROR: {e}", flush=True)
     sys.exit(1)
-print(
-    "OK: falcon-perception, PagedInferenceEngine, "
-    f"onnxruntime={__import__('onnxruntime').__version__}, "
-    f"torch={__import__('torch').__version__}, "
-    f"cuda={__import__('torch').cuda.is_available()}",
-    flush=True,
-)
+if darwin_arm:
+    print(
+        "OK: falcon-perception MLX BatchInferenceEngine, "
+        f"onnxruntime={__import__('onnxruntime').__version__} (CPU)",
+        flush=True,
+    )
+else:
+    print(
+        "OK: falcon-perception, PagedInferenceEngine, "
+        f"onnxruntime={__import__('onnxruntime').__version__}, "
+        f"torch={__import__('torch').__version__}, "
+        f"cuda={__import__('torch').cuda.is_available()}",
+        flush=True,
+    )
 PY
   ok "Runtime bağımlılıkları doğrulandı"
 }
